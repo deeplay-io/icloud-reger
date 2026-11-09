@@ -37,12 +37,14 @@ export class BrowserMail {
     if (last !== undefined && this.now() - last < this.cfg.browser.pollIntervalMs) return { status: 'later' };
     this.lastPass.set(email, this.now());
     const url = this.cfg.browser.apiUrl + '/mail/messages';
+    // Правило вида без вырезания кода: основной сервис остановится на самом новом подходящем письме.
+    const { from, subject, mustContain } = this.cfg.kinds[kind];
     let res: Response;
     try {
       res = await this.fetchFn(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, sentAfterMs, skipParents }),
+        body: JSON.stringify({ email, sentAfterMs, skipParents, match: { from, subject, mustContain } }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {

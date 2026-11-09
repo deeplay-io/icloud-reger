@@ -6,6 +6,8 @@ import { ApiError } from './errors';
 import { withPage } from './browser';
 import { extractCode } from './patterns';
 import { withAliasOperation } from './aliasSync';
+import { matchesRule } from './mailKinds';
+import type { MailKindRule } from './mailCodeConfig';
 
 export interface CodeResult {
   code: string;
@@ -144,9 +146,13 @@ function aliasParent(db: Db, email: string) {
   return parent;
 }
 
+// Обычное письмо открывается за 1–2 секунды; то, что не открылось за это время (другой шаблон, без получателя), пропускаем.
+const MESSAGE_TIMEOUT_MS = 10000;
+
 /**
  * Открывает вкладку iCloud Mail и по очереди открывает письма открытой папки, от новых к старым.
- * visit возвращает true, чтобы остановиться. Работает под общей блокировкой операций в браузере.
+ * visit возвращает true, чтобы остановиться. Письмо, которое не удалось прочитать, пропускается;
+ * ошибка — только если не прочиталось ни одно. Работает под общей блокировкой операций в браузере.
  */
 async function scanMailbox(cfg: Config, visit: (message: Awaited<ReturnType<typeof messageSnapshot>>, pageOffsetMinutes: number) => boolean | void): Promise<number> {
   const sel = cfg.code.selectors;
@@ -160,6 +166,8 @@ async function scanMailbox(cfg: Config, visit: (message: Awaited<ReturnType<type
     if (!list.length) throw new ApiError(404, 'В открытой папке iCloud Mail нет писем. Откройте папку с нужным письмом и повторите запрос.');
     const pageOffsetMinutes = await mail.evaluate(() => new Date().getTimezoneOffset());
     const n = Math.min(cfg.code.maxMessagesToScan, list.length);
+    let read = 0;
+    let lastError: unknown;
     for (let i = 0; i < n; i++) {
       const item = (await mail.$$(messageItem))[i];
       if (!item) break;
@@ -170,8 +178,17 @@ async function scanMailbox(cfg: Config, visit: (message: Awaited<ReturnType<type
         for (const snapshot of await readMessageSnapshots(page, body)) previous.push(JSON.stringify(snapshot));
         await item.click();
       }
-      if (visit(await messageSnapshot(page, subject, body, cfg.browser.actionTimeoutMs, previous), pageOffsetMinutes)) break;
+      let message;
+      try {
+        message = await messageSnapshot(page, subject, body, Math.min(cfg.browser.actionTimeoutMs, MESSAGE_TIMEOUT_MS), previous);
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
+      read++;
+      if (visit(message, pageOffsetMinutes)) break;
     }
+    if (!read && lastError) throw lastError;
     return n;
   }));
 }
@@ -213,8 +230,10 @@ export interface MailMessage {
  * Вид письма и код определяет gRPC-сервис теми же правилами, что для IMAP. seen_codes не трогаем:
  * повторный запрос должен вернуть тот же код.
  * skipParents — родители, чьи ящики gRPC-сервис уже исправно читает по IMAP: для них браузер не открываем.
+ * match — правило запрошенного вида (без вырезания кода): проход останавливается на первом, самом новом
+ * подходящем письме, как и поиск по IMAP. Без него собираются все письма на алиас.
  */
-export async function readAliasMessages(cfg: Config, db: Db, aliasEmail: string, sentAfterMs: number, skipParents: string[] = []) {
+export async function readAliasMessages(cfg: Config, db: Db, aliasEmail: string, sentAfterMs: number, skipParents: string[] = [], match?: Omit<MailKindRule, 'patterns'>) {
   const email = aliasEmail.trim().toLowerCase();
   const parent = aliasParent(db, email);
   if (skipParents.includes(parent.email)) return { parent: parent.email, skipped: true, messages: [] as MailMessage[] };
@@ -230,7 +249,11 @@ export async function readAliasMessages(cfg: Config, db: Db, aliasEmail: string,
       // Список от новых к старым: дальше только письма старше sent_after.
       if (receivedAt < after) return true;
     }
-    if (header.recipients.includes(email)) messages.push({ from: header.from, subject: header.subject, text: message.body, receivedAt });
+    if (!header.recipients.includes(email)) return;
+    const mail = { from: header.from, subject: header.subject, text: message.body, receivedAt };
+    if (match && !matchesRule(mail, { ...match, patterns: [] })) return;
+    messages.push(mail);
+    return !!match;
   });
   return { parent: parent.email, skipped: false, messages };
 }

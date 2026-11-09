@@ -76,8 +76,18 @@ export function createApi(cfg: Config, db: Db, persistParent: (email: string) =>
     if (!EMAIL_RE.test(email)) { res.status(400).json({ error: 'email обязателен' }); return; }
     const sentAfterMs = Math.max(0, Number(req.body?.sentAfterMs) || 0);
     const skipParents = Array.isArray(req.body?.skipParents) ? req.body.skipParents.map((p: unknown) => String(p).toLowerCase()) : [];
+    let match: { from?: string; subject?: string; mustContain?: string } | undefined;
+    if (req.body?.match && typeof req.body.match === 'object') {
+      match = {};
+      for (const key of ['from', 'subject', 'mustContain'] as const) {
+        const pattern = req.body.match[key];
+        if (!pattern) continue;
+        try { new RegExp(String(pattern), 'i'); } catch (e) { res.status(400).json({ error: `match.${key}: ${e instanceof Error ? e.message : e}` }); return; }
+        match[key] = String(pattern);
+      }
+    }
     try {
-      res.json(await readAliasMessages(cfg, db, email, sentAfterMs, skipParents));
+      res.json(await readAliasMessages(cfg, db, email, sentAfterMs, skipParents, match));
     } catch (e) {
       // parent: gRPC-сервис по нему понимает, что ящик этого алиаса действительно не прочитан.
       const alias = db.findAlias(email);

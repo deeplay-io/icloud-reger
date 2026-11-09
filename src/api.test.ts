@@ -32,4 +32,7 @@ test('/mail/messages decides from the database before touching the browser', asy
   assert.equal(inactive.body.parent, 'browser@icloud.com');
   assert.match(inactive.body.error, /не подключён/);
   assert.equal((await post({ email: 'bad' })).status, 400);
+  const badRule = await post({ email: 'other@icloud.com', match: { subject: '(' } });
+  assert.equal(badRule.status, 400);
+  assert.match(badRule.body.error, /match.subject/);
 });

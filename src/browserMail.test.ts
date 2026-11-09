@@ -22,7 +22,10 @@ test('browser messages are classified by the same kind rules as IMAP, newest fir
   ] } }], requests));
   assert.deepEqual(await browser.find('alias@icloud.com', 'CODE_KIND_SIGN_UP', 1793620790000, ['imap@icloud.com']),
     { status: 'found', code: '048213', receivedAt: 1793620800000, subject: 'Verify your email' });
-  assert.deepEqual(requests[0], { email: 'alias@icloud.com', sentAfterMs: 1793620790000, skipParents: ['imap@icloud.com'] });
+  assert.deepEqual(requests[0], {
+    email: 'alias@icloud.com', sentAfterMs: 1793620790000, skipParents: ['imap@icloud.com'],
+    match: { subject: cfg.kinds.CODE_KIND_SIGN_UP.subject },
+  });
 });
 
 test('one browser pass per alias per interval; skipped and busy do not count as a look', async () => {
