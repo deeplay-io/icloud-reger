@@ -1,6 +1,6 @@
 {
   "name": "icloud-codes",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "description": "Сервис выдачи кодов из писем для пула iCloud-алиасов + Windows GUI",
   "author": "Deeplay",
