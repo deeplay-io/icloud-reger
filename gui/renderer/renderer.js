@@ -266,9 +266,61 @@ function scrollLog() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
+function copyBlock(text) {
+  return '<div class="row"><div class="result cmd">' + escapeHtml(text) + '</div>' +
+    '<button class="secondary" data-copy="' + escapeHtml(text) + '">Копировать</button></div>';
+}
+
+function bindCopy(container) {
+  container.querySelectorAll('[data-copy]').forEach((button) => {
+    button.onclick = async () => {
+      await window.api.invoke('clipboard:write', button.dataset.copy);
+      button.textContent = 'Скопировано';
+      setTimeout(() => { button.textContent = 'Копировать'; }, 1500);
+    };
+  });
+}
+
+async function loadConnection() {
+  const info = await window.api.invoke('net:info');
+  const localOnly = ['127.0.0.1', 'localhost', '::1'].includes(info.host);
+  const first = info.addresses[0] ? info.addresses[0].address : '<IP>';
+  const grpcurl = 'grpcurl -plaintext -d \'{"email":"<алиас>@icloud.com","kind":"CODE_KIND_SIGN_UP","wait_seconds":5}\' ' +
+    first + ':' + info.port + ' deeplay.mail_code.v1.MailCodeService/GetCode';
+  const firewall = 'New-NetFirewallRule -DisplayName "ICloud Codes gRPC" -Direction Inbound -Protocol TCP -LocalPort ' +
+    info.port + ' -RemoteAddress <IP клиента> -Action Allow';
+  $('#tab-content').innerHTML =
+    '<div class="result ' + (info.running && !localOnly ? 'ok' : 'err') + '">' +
+    (info.running ? 'gRPC работает' : 'gRPC не запущен — нажмите «▶ Запустить gRPC»') + ' · слушает ' + escapeHtml(info.host + ':' + info.port) + '</div>' +
+    (localOnly ? '<div class="hint">Сейчас gRPC доступен только с этой машины: поставьте <code>grpc.host</code> = <code>0.0.0.0</code> в mail-code.json и перезапустите gRPC.</div>' : '') +
+    '<label>Адрес для клиента в той же сети</label>' +
+    (info.addresses.length
+      ? '<div class="table-scroll"><table><tr><th>сеть</th><th>адрес</th><th></th></tr>' +
+        info.addresses.map((a) => '<tr><td>' + escapeHtml(a.name) + '</td><td>' + escapeHtml(a.address + ':' + info.port) + '</td>' +
+          '<td><button class="secondary" data-copy="' + escapeHtml(a.address + ':' + info.port) + '">Копировать</button></td></tr>').join('') +
+        '</table></div>' +
+        '<div class="hint">Обычно нужен адрес основного адаптера (Ethernet или Wi-Fi). Адрес VPN подойдёт, только если клиент в той же VPN; виртуальные адаптеры (vEthernet, VirtualBox, WSL) снаружи недоступны.</div>'
+      : '<div class="hint">Сетевых адаптеров с IPv4 не найдено.</div>') +
+    '<label>Адрес из интернета (например, из кластера)</label>' +
+    '<div class="row"><button id="public-ip" class="secondary">Узнать внешний IP</button></div>' +
+    '<div id="public-ip-result" class="hint" role="status">Запрос уходит на api.ipify.org. Снаружи машина доступна по этому адресу, только если порт ' + escapeHtml(info.port) + ' проброшен на роутере или открыт у хостера.</div>' +
+    '<label>Проверка с другого компьютера (grpcurl)</label>' + copyBlock(grpcurl) +
+    '<label>Правило файрвола Windows (PowerShell от администратора)</label>' + copyBlock(firewall) +
+    '<div class="hint">Пускайте на порт только адреса клиентов: сервис отдаёт коды без TLS и без авторизации.</div>';
+  bindCopy($('#tab-content'));
+  $('#public-ip').onclick = async () => {
+    const out = $('#public-ip-result');
+    out.textContent = 'Узнаю…';
+    const r = await window.api.invoke('net:public-ip');
+    out.innerHTML = r.ok ? copyBlock(r.address + ':' + info.port) : escapeHtml(r.error);
+    bindCopy(out);
+  };
+}
+
 async function loadTab() {
   if (currentTab === 'aliases') await loadAliases();
   else if (currentTab === 'parents') await loadParents();
+  else if (currentTab === 'connection') await loadConnection();
   else await loadLog();
 }
 
@@ -320,7 +372,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   window.api.on('svc-log', appendLog);
   window.api.on('svc-state', () => refresh());
-  window.api.on('grpc-state', () => refresh());
+  window.api.on('grpc-state', () => {
+    refresh();
+    if (currentTab === 'connection') loadConnection();
+  });
   window.api.on('update-state', renderUpdate);
   window.api.invoke('update:state').then(renderUpdate);
 

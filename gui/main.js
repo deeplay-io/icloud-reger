@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
+const os = require('node:os');
 const { connectProfile } = require('./dolphin');
 
 let win = null;
@@ -14,9 +15,13 @@ function appRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.join(__dirname, '..');
 }
 
-// dev: файл в корне проекта; packaged: в userData, чтобы обновление приложения его не затирало
+// dev: файлы в корне проекта; packaged: в userData, чтобы обновление приложения их не затирало
+function userDir() {
+  return app.isPackaged ? app.getPath('userData') : appRoot();
+}
+
 function userFile(name, example) {
-  const dir = app.isPackaged ? app.getPath('userData') : appRoot();
+  const dir = userDir();
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, name);
   if (!fs.existsSync(p)) {
@@ -163,6 +168,29 @@ ipcMain.handle('svc:logs', () => logBuffer.slice(-500));
 ipcMain.handle('config:path', () => configPath());
 ipcMain.handle('config:open', () => shell.openPath(configPath()));
 ipcMain.handle('mail-config:open', () => shell.openPath(mailCodeConfigPath()));
+ipcMain.handle('clipboard:write', (_e, text) => clipboard.writeText(String(text)));
+
+// Раздел «Подключение»: по каким адресам машины клиент достучится до gRPC.
+ipcMain.handle('net:info', () => {
+  let grpc = {};
+  try { grpc = readConfig(path.join(userDir(), 'mail-code.json')).grpc || {}; } catch { /* файла ещё нет: значения по умолчанию */ }
+  // VPN и виртуальные адаптеры в конец: первым идёт адрес, который подставляется в пример grpcurl.
+  const virtual = (name) => /vpn|vethernet|virtual|vmware|wsl|hyper-v|tap|tun|tailscale|zerotier|hamachi|amnezia|wireguard/i.test(name);
+  const addresses = Object.entries(os.networkInterfaces()).flatMap(([name, list]) => (list || [])
+    .filter((a) => a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'))
+    .map((a) => ({ name, address: a.address })))
+    .sort((a, b) => virtual(a.name) - virtual(b.name));
+  return { host: grpc.host || '0.0.0.0', port: grpc.port || 50051, running: services.grpc.running(), addresses };
+});
+ipcMain.handle('net:public-ip', async () => {
+  try {
+    const res = await fetch('https://api.ipify.org', { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return { ok: true, address: (await res.text()).trim() };
+  } catch (e) {
+    return { ok: false, error: 'Не удалось узнать внешний IP: ' + (e.message || String(e)) };
+  }
+});
 ipcMain.handle('dolphin:settings', () => {
   const cfg = readConfig();
   return { profileId: cfg.browser?.dolphinProfileId || '', cdpUrl: cfg.browser?.cdpUrl || '' };

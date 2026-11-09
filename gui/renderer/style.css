@@ -92,6 +92,8 @@ input[type="text"]:focus { outline: none; border-color: #2f6fed; }
 .result.err { color: #e28b6a; border-color: #5c3a2b; }
 .result.busy { color: #8b93a1; }
 
+.result.cmd { flex: 1 1 300px; margin-top: 0; font-size: 13px; color: #b8bfca; }
+
 .hint { margin-top: 8px; font-size: 12px; line-height: 1.5; color: #8b93a1; overflow-wrap: anywhere; }
 .hint code { color: #8b93a1; }
 
