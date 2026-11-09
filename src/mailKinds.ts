@@ -29,3 +29,12 @@ export function mailKind(mail: ParsedMail, kinds: Record<MailKind, MailKindRule>
 export function mailCode(mail: ParsedMail, rule: MailKindRule): Extraction | null {
   return extractCode(mail.subject + '\n' + mail.text, rule.patterns);
 }
+
+/**
+ * Код из письма запрошенного вида. undefined — письмо не этого вида; null — этого, но код не вырезан
+ * или письмо подходит и под другой вид (не угадываем).
+ */
+export function kindCode(mail: ParsedMail, kind: MailKind, kinds: Record<MailKind, MailKindRule>): Extraction | null | undefined {
+  if (!matchesRule(mail, kinds[kind])) return undefined;
+  return mailKind(mail, kinds) === kind ? mailCode(mail, kinds[kind]) : null;
+}

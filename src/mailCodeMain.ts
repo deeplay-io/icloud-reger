@@ -1,15 +1,22 @@
 // gRPC-сервис кодов из почты (для пилота регистрации): npm run grpc
 import { loadMailCodeConfig } from './mailCodeConfig';
 import { Mailboxes } from './mailboxes';
+import { BrowserMail } from './browserMail';
+import { combineSources } from './codeSources';
 import { SERVICE_NAME, startGrpcServer } from './grpcServer';
 
 async function main(): Promise<void> {
   const cfg = loadMailCodeConfig();
   const log = (msg: string): void => console.log(`[${new Date().toISOString()}] ${msg}`);
   const mailboxes = new Mailboxes(cfg, log);
-  const { server, port } = await startGrpcServer(cfg, (email, kind, sentAfter) => mailboxes.find(email, kind, sentAfter), log);
+  const imap = cfg.imap.accounts.length ? mailboxes : null;
+  const browser = cfg.browser.enabled ? new BrowserMail(cfg) : null;
+  const { server, port } = await startGrpcServer(cfg, combineSources(imap, browser), log);
   log(`${SERVICE_NAME} запущен: ${cfg.grpc.host}:${port}, без TLS`);
-  log(`ящики родителей: ${cfg.imap.accounts.map(account => account.email).join(', ') || 'не заданы'}`);
+  log(`IMAP, ящики родителей: ${cfg.imap.accounts.map(account => account.email).join(', ') || 'не заданы'}`);
+  log(browser
+    ? `запасной путь через браузер: ${cfg.browser.apiUrl} (для родителей без IMAP; нужен запущенный сервис и подключённый профиль Dolphin)`
+    : 'запасной путь через браузер выключен');
   const errors = await mailboxes.connectAll();
   for (const error of errors) log(error);
   if (cfg.imap.accounts.length && !errors.length) log('IMAP: все ящики подключены');

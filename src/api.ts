@@ -2,7 +2,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Config } from './config';
 import { type Db, ALIAS_HOURLY_LIMIT, ALIAS_MAXIMUM } from './db';
 import { ApiError } from './errors';
-import { readCode } from './codeReader';
+import { readAliasMessages, readCode } from './codeReader';
 import { isConnected } from './browser';
 import { syncAliases } from './aliasSync';
 import { createAlias } from './aliasCreate';
@@ -69,6 +69,22 @@ export function createApi(cfg: Config, db: Db, persistParent: (email: string) =>
   };
   app.get('/code', codeHandler);
   app.post('/code', codeHandler);
+
+  // Запасной путь gRPC-сервиса кодов: письма на алиас из iCloud Mail в браузере (см. readAliasMessages).
+  app.post('/mail/messages', async (req: Request, res: Response) => {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    if (!EMAIL_RE.test(email)) { res.status(400).json({ error: 'email обязателен' }); return; }
+    const sentAfterMs = Math.max(0, Number(req.body?.sentAfterMs) || 0);
+    const skipParents = Array.isArray(req.body?.skipParents) ? req.body.skipParents.map((p: unknown) => String(p).toLowerCase()) : [];
+    try {
+      res.json(await readAliasMessages(cfg, db, email, sentAfterMs, skipParents));
+    } catch (e) {
+      // parent: gRPC-сервис по нему понимает, что ящик этого алиаса действительно не прочитан.
+      const alias = db.findAlias(email);
+      const parent = alias ? db.parentById(alias.parent_id)?.email : undefined;
+      res.status(e instanceof ApiError ? e.status : 500).json({ error: e instanceof Error ? e.message : String(e), parent });
+    }
+  });
 
   app.get('/aliases', (_req: Request, res: Response) => {
     res.json(db.listAliases());

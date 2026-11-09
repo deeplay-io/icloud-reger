@@ -41,9 +41,18 @@ export interface MailKindRule {
   /** Вырезание кода из темы и текста, по порядку, как code.patterns. */
   patterns: CodePattern[];
 }
+export interface BrowserFallbackConfig {
+  /** Читать коды через браузер (профиль Dolphin основного сервиса), если родитель алиаса не читается по IMAP. */
+  enabled: boolean;
+  /** HTTP API основного сервиса; пусто — CODES_API_URL от окна приложения или http://127.0.0.1:8787. */
+  apiUrl: string;
+  /** Не чаще одного прохода по почте в браузере на алиас: каждый проход кликает по письмам. */
+  pollIntervalMs: number;
+}
 export interface MailCodeConfig {
   grpc: GrpcConfig;
   imap: ImapConfig;
+  browser: BrowserFallbackConfig;
   /** Домены обслуживаемых ящиков; адрес с другим доменом — UNKNOWN_MAILBOX. */
   domains: string[];
   /** Письмо относится к виду, если подходит под его правило и не подходит под правило другого вида. */
@@ -59,6 +68,7 @@ const SIX_DIGITS: CodePattern[] = [{ name: 'code-6', regex: '(?:code|код)[^0-
 export const MAIL_CODE_DEFAULTS: MailCodeConfig = {
   grpc: { host: '0.0.0.0', port: 50051, maxWaitSeconds: 120, pollIntervalMs: 3000 },
   imap: { host: 'imap.mail.me.com', port: 993, accounts: [], reconnectDelayMs: 30000 },
+  browser: { enabled: true, apiUrl: '', pollIntervalMs: 15000 },
   domains: ['icloud.com'],
   kinds: {
     CODE_KIND_SIGN_UP: { subject: 'verif|confirm|sign.?up|регистрац|подтвержд', patterns: SIX_DIGITS },
@@ -82,6 +92,8 @@ export function loadMailCodeConfig(file = process.env.MAIL_CODE_CONFIG ?? 'mail-
   if (!Number.isInteger(cfg.grpc.port) || cfg.grpc.maxWaitSeconds < 0 || cfg.grpc.pollIntervalMs < 100) {
     throw new Error('grpc: укажите port, maxWaitSeconds >= 0 и pollIntervalMs >= 100');
   }
+  if (cfg.browser.pollIntervalMs < 1000) throw new Error('browser.pollIntervalMs: не меньше 1000');
+  cfg.browser.apiUrl = (cfg.browser.apiUrl || process.env.CODES_API_URL || 'http://127.0.0.1:8787').replace(/\/+$/, '');
   // Кривой regex в правилах вида письма молча ломал бы выдачу кодов: падаем сразу.
   for (const kind of MAIL_KINDS) {
     const rule = cfg.kinds[kind];

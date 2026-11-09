@@ -5,6 +5,7 @@ import type { Db } from './db';
 import { ApiError } from './errors';
 import { withPage } from './browser';
 import { extractCode } from './patterns';
+import { withAliasOperation } from './aliasSync';
 
 export interface CodeResult {
   code: string;
@@ -28,11 +29,23 @@ export function parseMailDate(value: string): number | null {
 
 export function readHeaderFields(rows: { label: string; value: string }[]) {
   const find = (label: RegExp) => rows.filter(row => label.test(row.label.trim())).map(row => row.value).join('\n');
+  const dateText = find(/^(?:Дата|Date)\s*:?$/i);
   return {
     recipients: (find(/^(?:Кому|Копия|To|Cc)\s*:?$/i).match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi) ?? []).map(email => email.toLowerCase()),
+    from: find(/^(?:От кого|От|From)\s*:?$/i),
     subject: find(/^(?:Тема|Subject)\s*:?$/i),
-    date: parseMailDate(find(/^(?:Дата|Date)\s*:?$/i)),
+    date: parseMailDate(dateText),
+    dateText,
   };
+}
+
+/**
+ * iCloud показывает время письма в часовом поясе браузера, а профиль Dolphin часто подменяет его под прокси.
+ * parseMailDate читает такое время в поясе Node, поэтому сдвигаем на разницу поясов. Время с явным поясом не трогаем.
+ */
+export function pageDateToUtc(dateText: string, parsed: number, pageOffsetMinutes: number): number {
+  if (/\b(?:GMT|UTC|Z)\b|[+-]\d{2}:?\d{2}\s*$/i.test(dateText)) return parsed;
+  return parsed + (pageOffsetMinutes - new Date(parsed).getTimezoneOffset()) * 60000;
 }
 
 function isMailFrame(frame: Frame, message = false): boolean {
@@ -119,51 +132,102 @@ async function messageSnapshot(page: Page, expectedSubject: string, bodySelector
   throw new ApiError(503, 'Не удалось дождаться заголовка и текста выбранного письма iCloud. Повторите запрос.');
 }
 
-let reading = false;
-export async function readCode(cfg: Config, db: Db, aliasEmail: string): Promise<CodeResult> {
-  if (reading) throw new ApiError(409, 'Чтение письма уже выполняется. Дождитесь завершения.');
-  const email = aliasEmail.trim().toLowerCase();
+/** Алиас из базы и его родитель; читать почту можно только у родителя, чей профиль подключён. */
+function aliasParent(db: Db, email: string) {
   const alias = db.findAlias(email);
   if (!alias) throw new ApiError(404, `Алиас ${email} не найден в базе: возможно, он удалён или деактивирован в iCloud. Если адрес создан недавно, нажмите «Загрузить из iCloud».`);
   const parent = db.parentById(alias.parent_id);
-  if (!parent || db.activeParent()?.id !== parent.id) throw new ApiError(503, 'Выберите родителя этого алиаса и подключите его профиль Dolphin.');
+  if (!parent) throw new ApiError(404, `Родитель алиаса ${email} не найден в базе.`);
+  return parent;
+}
+
+/**
+ * Открывает вкладку iCloud Mail и по очереди открывает письма открытой папки, от новых к старым.
+ * visit возвращает true, чтобы остановиться. Работает под общей блокировкой операций в браузере.
+ */
+async function scanMailbox(cfg: Config, visit: (message: Awaited<ReturnType<typeof messageSnapshot>>, pageOffsetMinutes: number) => boolean | void): Promise<number> {
   const sel = cfg.code.selectors;
   const messageItem = sel.messageItem || '.thread-list-item[role="treeitem"]';
   const body = sel.body || '.mail-message-defaults';
-  reading = true;
-  try {
-    return await withPage(cfg.browser, cfg.browser.mailUrl, cfg.browser.mailTabHint, async page => {
-      await page.bringToFront();
-      const mail = page.frames().find(frame => isMailFrame(frame)) ?? await page.waitForFrame(frame => isMailFrame(frame), { timeout: cfg.browser.actionTimeoutMs });
-      await mail.waitForSelector('.thread-list', { timeout: cfg.browser.actionTimeoutMs });
-      const list = await mail.$$(messageItem);
-      if (!list.length) throw new ApiError(404, 'В открытой папке iCloud Mail нет писем. Откройте папку с нужным письмом и повторите запрос.');
-      const n = Math.min(cfg.code.maxMessagesToScan, list.length);
-      const seen = db.seenRefs(email);
-      for (let i = 0; i < n; i++) {
-        const item = (await mail.$$(messageItem))[i];
-        if (!item) break;
-        const subject = await item.$eval(sel.subject || '.thread-subject', element => element.textContent?.trim() ?? '').catch(() => '');
-        const selected = await item.evaluate(element => element.getAttribute('aria-selected') === 'true');
-        const previous: string[] = [];
-        if (!selected) {
-          for (const snapshot of await readMessageSnapshots(page, body)) previous.push(JSON.stringify(snapshot));
-          await item.click();
-        }
-        const message = await messageSnapshot(page, subject, body, cfg.browser.actionTimeoutMs, previous);
-        if (!message.header.recipients.includes(email)) continue;
-        if (message.header.date === null) throw new ApiError(503, 'Не удалось распознать дату письма: свежесть кода не подтверждена.');
-        const age = Date.now() - message.header.date;
-        if (age > cfg.code.freshnessMinutes * 60000 || age < -5 * 60000) continue;
-        const extracted = extractCode(message.body, cfg.code.patterns);
-        if (!extracted) continue;
-        const ref = createHash('sha256').update(JSON.stringify(message.rows) + '\n' + message.body).digest('hex');
-        if (seen.has(ref)) continue;
-        if (db.activeParent()?.id !== parent.id) throw new ApiError(409, 'Родитель изменился во время чтения. Повторите запрос.');
-        db.recordCode(email, ref, extracted.code);
-        return { code: extracted.code, pattern: extracted.pattern, msgRef: ref, subject: message.header.subject };
+  return withAliasOperation(() => withPage(cfg.browser, cfg.browser.mailUrl, cfg.browser.mailTabHint, async page => {
+    await page.bringToFront();
+    const mail = page.frames().find(frame => isMailFrame(frame)) ?? await page.waitForFrame(frame => isMailFrame(frame), { timeout: cfg.browser.actionTimeoutMs });
+    await mail.waitForSelector('.thread-list', { timeout: cfg.browser.actionTimeoutMs });
+    const list = await mail.$$(messageItem);
+    if (!list.length) throw new ApiError(404, 'В открытой папке iCloud Mail нет писем. Откройте папку с нужным письмом и повторите запрос.');
+    const pageOffsetMinutes = await mail.evaluate(() => new Date().getTimezoneOffset());
+    const n = Math.min(cfg.code.maxMessagesToScan, list.length);
+    for (let i = 0; i < n; i++) {
+      const item = (await mail.$$(messageItem))[i];
+      if (!item) break;
+      const subject = await item.$eval(sel.subject || '.thread-subject', element => element.textContent?.trim() ?? '').catch(() => '');
+      const selected = await item.evaluate(element => element.getAttribute('aria-selected') === 'true');
+      const previous: string[] = [];
+      if (!selected) {
+        for (const snapshot of await readMessageSnapshots(page, body)) previous.push(JSON.stringify(snapshot));
+        await item.click();
       }
-      throw new ApiError(404, `Новое письмо с кодом для ${email} не найдено среди ${n} последних писем (свежесть: ${cfg.code.freshnessMinutes} мин.).`);
-    });
-  } finally { reading = false; }
+      if (visit(await messageSnapshot(page, subject, body, cfg.browser.actionTimeoutMs, previous), pageOffsetMinutes)) break;
+    }
+    return n;
+  }));
+}
+
+export async function readCode(cfg: Config, db: Db, aliasEmail: string): Promise<CodeResult> {
+  const email = aliasEmail.trim().toLowerCase();
+  const parent = aliasParent(db, email);
+  if (db.activeParent()?.id !== parent.id) throw new ApiError(503, 'Выберите родителя этого алиаса и подключите его профиль Dolphin.');
+  const seen = db.seenRefs(email);
+  let result: CodeResult | undefined;
+  const n = await scanMailbox(cfg, message => {
+    if (!message.header.recipients.includes(email)) return;
+    if (message.header.date === null) throw new ApiError(503, 'Не удалось распознать дату письма: свежесть кода не подтверждена.');
+    const age = Date.now() - message.header.date;
+    if (age > cfg.code.freshnessMinutes * 60000 || age < -5 * 60000) return;
+    const extracted = extractCode(message.body, cfg.code.patterns);
+    if (!extracted) return;
+    const ref = createHash('sha256').update(JSON.stringify(message.rows) + '\n' + message.body).digest('hex');
+    if (seen.has(ref)) return;
+    if (db.activeParent()?.id !== parent.id) throw new ApiError(409, 'Родитель изменился во время чтения. Повторите запрос.');
+    db.recordCode(email, ref, extracted.code);
+    result = { code: extracted.code, pattern: extracted.pattern, msgRef: ref, subject: message.header.subject };
+    return true;
+  });
+  if (result) return result;
+  throw new ApiError(404, `Новое письмо с кодом для ${email} не найдено среди ${n} последних писем (свежесть: ${cfg.code.freshnessMinutes} мин.).`);
+}
+
+export interface MailMessage {
+  from: string;
+  subject: string;
+  text: string;
+  /** Время письма из заголовка в UTC; точность — минута или секунда, как показывает iCloud. 0 — не распознано. */
+  receivedAt: number;
+}
+
+/**
+ * Запасной путь gRPC-сервиса кодов: письма на алиас в открытой папке iCloud Mail, от новых к старым.
+ * Вид письма и код определяет gRPC-сервис теми же правилами, что для IMAP. seen_codes не трогаем:
+ * повторный запрос должен вернуть тот же код.
+ * skipParents — родители, чьи ящики gRPC-сервис уже исправно читает по IMAP: для них браузер не открываем.
+ */
+export async function readAliasMessages(cfg: Config, db: Db, aliasEmail: string, sentAfterMs: number, skipParents: string[] = []) {
+  const email = aliasEmail.trim().toLowerCase();
+  const parent = aliasParent(db, email);
+  if (skipParents.includes(parent.email)) return { parent: parent.email, skipped: true, messages: [] as MailMessage[] };
+  if (db.activeParent()?.id !== parent.id) throw new ApiError(503, `Родитель алиаса ${parent.email} не подключён: откройте его профиль Dolphin и сделайте активным.`);
+  // Время в заголовке может быть с точностью до минуты: письмо из той же минуты не теряем.
+  const after = Math.floor(sentAfterMs / 60000) * 60000;
+  const messages: MailMessage[] = [];
+  await scanMailbox(cfg, (message, pageOffsetMinutes) => {
+    const { header } = message;
+    const receivedAt = header.date === null ? 0 : pageDateToUtc(header.dateText, header.date, pageOffsetMinutes);
+    if (sentAfterMs > 0) {
+      if (!receivedAt) return;
+      // Список от новых к старым: дальше только письма старше sent_after.
+      if (receivedAt < after) return true;
+    }
+    if (header.recipients.includes(email)) messages.push({ from: header.from, subject: header.subject, text: message.body, receivedAt });
+  });
+  return { parent: parent.email, skipped: false, messages };
 }

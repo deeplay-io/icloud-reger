@@ -75,14 +75,14 @@ function waitExit(proc, ms) {
 }
 
 /** Дочерний процесс сервиса: запуск с проверкой порта, лог в общее окно, остановка с ожиданием выхода. */
-function createService({ name, title, logPrefix, script, configFile, configEnv, address }) {
+function createService({ name, title, logPrefix, script, configFile, configEnv, address, extraEnv = () => ({}) }) {
   let child = null;
   let starting = false;
   const notify = () => send(name + '-state', !!child);
 
   function spawnChild(file) {
     const runtime = nodeRuntime();
-    const env = Object.assign({}, process.env, runtime.env, { [configEnv]: file });
+    const env = Object.assign({}, process.env, runtime.env, extraEnv(), { [configEnv]: file });
     const proc = spawn(runtime.command, [path.join(appRoot(), 'dist', script)], { cwd: appRoot(), env, windowsHide: true });
     child = proc;
     const output = (d) => String(d).split(/\r?\n/).forEach((line) => line.trim() && pushLog(logPrefix + line));
@@ -156,6 +156,8 @@ const services = {
     configFile: mailCodeConfigPath,
     configEnv: 'MAIL_CODE_CONFIG',
     address: (cfg) => ({ host: cfg.grpc?.host || '0.0.0.0', port: cfg.grpc?.port || 50051, key: 'grpc.port' }),
+    // Запасной путь чтения кодов идёт через браузер HTTP-сервиса этого же окна.
+    extraEnv: () => ({ CODES_API_URL: 'http://127.0.0.1:' + readApiPort() }),
   }),
 };
 

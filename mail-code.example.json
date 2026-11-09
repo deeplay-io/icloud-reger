@@ -17,6 +17,11 @@
       }
     ]
   },
+  "browser": {
+    "enabled": true,
+    "apiUrl": "",
+    "pollIntervalMs": 15000
+  },
   "domains": ["icloud.com"],
   "kinds": {
     "CODE_KIND_SIGN_UP": {

@@ -1,6 +1,6 @@
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import type { ImapAccount, ImapConfig, MailCodeConfig, MailKind } from './mailCodeConfig';
-import { mailCode, mailKind, matchesRule, parseMail, type ParsedMail } from './mailKinds';
+import { kindCode, parseMail, type ParsedMail } from './mailKinds';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -141,24 +141,31 @@ export class Mailbox {
 /** Все ящики родителей. Реестра алиасов в кластере пока нет, поэтому письмо ищется во всех ящиках сразу. */
 export class Mailboxes {
   readonly boxes: Mailbox[];
+  /** Ящики, которые при последнем поиске прочитались без ошибок: для их алиасов браузерный путь не нужен. */
+  private healthy: string[] = [];
 
   constructor(private readonly cfg: MailCodeConfig, log: (msg: string) => void) {
     this.boxes = cfg.imap.accounts.map(account => new Mailbox(account, cfg.imap, log));
+  }
+
+  healthyEmails(): string[] {
+    return this.healthy;
   }
 
   async find(email: string, kind: MailKind, sentAfterMs: number): Promise<FindResult> {
     if (!this.boxes.length) throw new Error('в mail-code.json не задан ни один IMAP-аккаунт');
     const settled = await Promise.allSettled(this.boxes.map(async box =>
       (await box.candidates(email, sentAfterMs)).map(candidate => ({ box, candidate }))));
+    this.healthy = this.boxes.filter((_, i) => settled[i].status === 'fulfilled').map(box => box.account.email);
     const errors = settled.flatMap(r => r.status === 'rejected' ? [message(r.reason)] : []);
     const newestFirst = settled.flatMap(r => r.status === 'fulfilled' ? r.value : [])
       .sort((a, b) => b.candidate.receivedAt - a.candidate.receivedAt || b.candidate.uid - a.candidate.uid);
     for (const { box, candidate } of newestFirst) {
       const mail = await box.read(candidate);
-      if (!matchesRule(mail, this.cfg.kinds[kind])) continue;
       // Берём только самое новое письмо нужного вида: коды из старых GGPass уже не примет.
       // Подходит и под другой вид — не угадываем и к старым письмам не идём.
-      const extracted = mailKind(mail, this.cfg.kinds) === kind ? mailCode(mail, this.cfg.kinds[kind]) : null;
+      const extracted = kindCode(mail, kind, this.cfg.kinds);
+      if (extracted === undefined) continue;
       return extracted
         ? { status: 'found', code: extracted.code, receivedAt: candidate.receivedAt, subject: mail.subject }
         : { status: 'unparsed', receivedAt: candidate.receivedAt, subject: mail.subject };
