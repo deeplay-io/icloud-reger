@@ -1,0 +1,148 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100%; width: 100%; }
+[hidden] { display: none !important; }
+body {
+  min-height: 100vh;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: #14161a;
+  color: #d7dae0;
+  display: flex;
+  flex-direction: column;
+}
+body > * { flex-shrink: 0; min-width: 0; }
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #262a31;
+  flex-wrap: wrap;
+}
+h1 { font-size: 17px; margin: 0; color: #fff; }
+
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #333a44;
+  color: #8b93a1;
+  background: #1b1f26;
+}
+.chip.ok { color: #7ee2a8; border-color: #2b5c40; background: #17251d; }
+.chip.bad { color: #e2a07e; border-color: #5c3a2b; background: #251c17; }
+
+.controls { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+button {
+  max-width: 100%;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid #2f6fed;
+  background: #2453c4;
+  color: #fff;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: #2f6fed; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.secondary { background: #1f242c; border-color: #333a44; color: #c3c9d4; }
+button.secondary:hover:not(:disabled) { background: #262c36; }
+
+.panel {
+  margin: 14px 16px;
+  padding: 14px;
+  border: 1px solid #262a31;
+  border-radius: 10px;
+  background: #181b20;
+}
+.panel label { font-size: 12px; color: #8b93a1; display: block; margin-bottom: 8px; }
+main > label { display: block; margin: 14px 0 8px; font-size: 12px; color: #8b93a1; }
+#prefix-result { margin-bottom: 14px; }
+
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row > button { flex-shrink: 0; }
+input[type="text"] {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #333a44;
+  background: #101216;
+  color: #e8ebf0;
+}
+input[type="text"]:focus { outline: none; border-color: #2f6fed; }
+
+.result {
+  margin-top: 10px;
+  font-size: 16px;
+  font-family: Consolas, monospace;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #101216;
+  border: 1px solid #262a31;
+  word-break: break-all;
+}
+.result.ok { color: #7ee2a8; border-color: #2b5c40; }
+.result.err { color: #e28b6a; border-color: #5c3a2b; }
+.result.busy { color: #8b93a1; }
+
+.hint { margin-top: 8px; font-size: 12px; line-height: 1.5; color: #8b93a1; overflow-wrap: anywhere; }
+.hint code { color: #8b93a1; }
+
+.tabs { display: flex; gap: 4px; padding: 0 16px; flex-wrap: wrap; }
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: #8b93a1;
+  padding: 8px 14px;
+}
+.tab:hover { color: #d7dae0; background: none; }
+.tab.active { color: #fff; border-bottom-color: #2f6fed; }
+
+main { flex: 1 0 auto; min-height: 220px; padding: 12px 16px 16px; }
+
+.table-scroll { width: 100%; overflow-x: auto; margin-top: 12px; }
+table { width: 100%; min-width: 540px; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #22262d; }
+th { color: #8b93a1; font-weight: 600; font-size: 12px; }
+td { font-family: Consolas, monospace; }
+
+.pager { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 12px; }
+.pager button { padding: 5px 12px; }
+.pager-info { font-size: 12px; color: #8b93a1; padding: 0 8px; font-variant-numeric: tabular-nums; }
+
+#log-pre {
+  margin: 0;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #101216;
+  border: 1px solid #262a31;
+  border-radius: 8px;
+  padding: 10px;
+  min-height: 240px;
+  max-height: 65vh;
+  overflow-y: auto;
+  color: #b8bfca;
+}
+
+@media (max-width: 600px) {
+  header { gap: 12px; }
+  .controls { width: 100%; margin-left: 0; }
+  .panel { margin: 10px 12px; padding: 12px; }
+  .tabs { padding: 0 12px; }
+  main { padding: 12px; }
+  .row > input { flex-basis: 100%; }
+  .row > button { flex: 1 1 auto; }
+  .result { font-size: 14px; }
+}

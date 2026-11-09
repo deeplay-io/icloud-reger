@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'" />
+  <title>ICloud Codes</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>ICloud Codes</h1>
+    <div class="chips">
+      <span id="chip-svc" class="chip bad">сервис: —</span>
+      <span id="chip-cdp" class="chip bad">браузер: —</span>
+      <span id="chip-parent" class="chip bad">родитель: —</span>
+      <span id="chip-aliases" class="chip bad">алиасов: —</span>
+      <span id="chip-generator" class="chip">авто: —</span>
+    </div>
+    <div class="controls">
+      <button id="btn-start">▶ Запустить сервис</button>
+      <button id="btn-stop" class="secondary" disabled>■ Остановить</button>
+      <button id="btn-config" class="secondary">config.json</button>
+    </div>
+  </header>
+
+  <section class="panel">
+    <label for="dolphin-profile-id">Профиль Dolphin Anty</label>
+    <div class="row">
+      <input id="dolphin-profile-id" type="text" inputmode="numeric" placeholder="ID профиля с открытым iCloud" />
+      <button id="btn-dolphin-connect">Подключить профиль</button>
+      <button id="btn-dolphin-restart" class="secondary" hidden>Перезапустить профиль и подключить</button>
+    </div>
+    <div id="dolphin-result" class="hint" role="status" aria-live="polite">Укажите ID из редактора профиля Dolphin Anty. Если Dolphin не запущен, он откроется автоматически.</div>
+  </section>
+
+  <section class="panel code-panel">
+    <label for="code-email">Запросить код</label>
+    <div class="row">
+      <input id="code-email" type="text" placeholder="***@icloud.com" spellcheck="false" />
+      <button id="btn-code">Получить код</button>
+    </div>
+    <div id="code-result" class="result">Введите e-mail алиаса и нажмите «Получить код».</div>
+    <div class="hint">HTTP API то же самое: <code>curl "http://127.0.0.1:8787/code?email=***@icloud.com"</code></div>
+  </section>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="aliases">Алиасы</button>
+    <button class="tab" data-tab="parents">Родители</button>
+    <button class="tab" data-tab="log">Лог сервиса</button>
+  </nav>
+
+  <main id="tab-content"></main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

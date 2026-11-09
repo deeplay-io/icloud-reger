@@ -1,0 +1,57 @@
+{
+  "name": "icloud-codes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Сервис выдачи кодов из писем для пула iCloud-алиасов + Windows GUI",
+  "author": "Deeplay",
+  "main": "gui/main.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "tsx src/index.ts",
+    "smoke": "tsx src/smoke.ts",
+    "gui": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win",
+    "test": "tsx --test src/*.test.ts gui/*.test.js",
+    "grpc": "tsx src/mailCodeMain.ts",
+    "grpc:call": "tsx src/grpcCall.ts",
+    "imap:probe": "tsx src/imapProbe.ts"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.7",
+    "@grpc/proto-loader": "^0.8.1",
+    "@grpc/reflection": "^1.0.4",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
+    "grpc-health-check": "^2.1.0",
+    "imapflow": "^2.10.0",
+    "mailparser": "^3.14.1",
+    "puppeteer-core": "^23.10.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.21",
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^22.5.0",
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  },
+  "build": {
+    "appId": "deeplay.icloud-codes",
+    "productName": "ICloud Codes",
+    "asar": false,
+    "files": [
+      "gui/**/*",
+      "dist/**/*",
+      "config.example.json",
+      "package.json"
+    ],
+    "win": { "target": "nsis" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

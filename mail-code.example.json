@@ -1,0 +1,31 @@
+{
+  "grpc": {
+    "host": "0.0.0.0",
+    "port": 50051,
+    "maxWaitSeconds": 120,
+    "pollIntervalMs": 3000
+  },
+  "imap": {
+    "host": "imap.mail.me.com",
+    "port": 993,
+    "reconnectDelayMs": 30000,
+    "accounts": [
+      {
+        "email": "PARENT@icloud.com",
+        "password": "xxxx-xxxx-xxxx-xxxx",
+        "proxy": ""
+      }
+    ]
+  },
+  "domains": ["icloud.com"],
+  "kinds": {
+    "CODE_KIND_SIGN_UP": {
+      "subject": "verif|confirm|sign.?up|регистрац|подтвержд",
+      "patterns": [{ "name": "code-6", "regex": "(?:code|код)[^0-9]{0,40}(\\d{6})(?!\\d)" }]
+    },
+    "CODE_KIND_MFA": {
+      "subject": "2fa|two.?factor|двухфактор|authenticat|log.?in|вход",
+      "patterns": [{ "name": "code-6", "regex": "(?:code|код)[^0-9]{0,40}(\\d{6})(?!\\d)" }]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+data/
+debug/
+config.json
+mail-code.json
+.runtime/
+.npm-cache/
+.electron-cache/
+.electron-user-data/
+*.log
+.ui-layout-*.png

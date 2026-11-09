@@ -1,0 +1,61 @@
+{
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "db": {
+    "file": "./data/codes.db"
+  },
+  "debug": {
+    "dir": "./debug"
+  },
+  "browser": {
+    "cdpUrl": "http://127.0.0.1:9222",
+    "hideMyEmailUrl": "https://account.apple.com/manage?section=hide_my_email",
+    "mailUrl": "https://www.icloud.com/mail/",
+    "hideMyEmailTabHint": "hide_my_email",
+    "mailTabHint": "icloud.com/mail",
+    "connectTimeoutMs": 15000,
+    "actionTimeoutMs": 30000
+  },
+  "parent": {
+    "email": "PARENT@icloud.com",
+    "aliasLimit": 750
+  },
+  "generator": {
+    "enabled": true,
+    "minIntervalMinutes": 8,
+    "maxIntervalMinutes": 16,
+    "namePrefix": "mybox"
+  },
+  "code": {
+    "freshnessMinutes": 15,
+    "maxMessagesToScan": 10,
+    "selectors": {
+      "messageItem": ".thread-list-item[role=treeitem]",
+      "body": ".mail-message-defaults",
+      "subject": ".thread-subject",
+      "closeMessage": ""
+    },
+    "patterns": [
+      {
+        "name": "kod-digit",
+        "regex": "код[^0-9]{0,12}(\\d{4,6})"
+      },
+      {
+        "name": "code-digit",
+        "regex": "code[^0-9]{0,12}(\\d{4,6})"
+      },
+      {
+        "name": "verify-digit",
+        "mustContain": "верификац|код|code|verif|one-time|otp|password",
+        "regex": "\\b(\\d{4,6})\\b"
+      },
+      {
+        "name": "any-digit4",
+        "mustContain": "код|code|верификац|one-time|otp",
+        "regex": "\\b(\\d{4})\\b"
+      }
+    ]
+  }
+}
