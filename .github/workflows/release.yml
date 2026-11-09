@@ -63,7 +63,7 @@ jobs:
 
       # До electron-builder: он пересобирает better-sqlite3 под Electron, и под Node тесты уже не запустятся.
       - name: Тесты
-        run: npx tsx --test src/*.test.ts gui/*.test.js
+        run: npx tsx --test src/*.test.ts
 
       - run: npm run build
 

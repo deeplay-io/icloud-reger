@@ -9,13 +9,7 @@
     "host": "imap.mail.me.com",
     "port": 993,
     "reconnectDelayMs": 30000,
-    "accounts": [
-      {
-        "email": "PARENT@icloud.com",
-        "password": "xxxx-xxxx-xxxx-xxxx",
-        "proxy": ""
-      }
-    ]
+    "accounts": []
   },
   "browser": {
     "enabled": true,

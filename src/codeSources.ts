@@ -5,7 +5,10 @@ import { BrowserMailError, type BrowserFindResult } from './browserMail';
 
 export interface ImapSource {
   find(email: string, kind: MailKind, sentAfterMs: number): Promise<FindResult>;
-  healthyEmails(): string[];
+  /** Ящики, прочитанные без ошибок при последнем поиске этого алиаса. */
+  healthyEmails(email: string): string[];
+  /** Сколько ящиков задано; 0 — IMAP пока не используется (пароли можно добавить без перезапуска). */
+  size?(): number;
 }
 export interface BrowserSource {
   find(email: string, kind: MailKind, sentAfterMs: number, skipParents: string[]): Promise<BrowserFindResult>;
@@ -20,8 +23,9 @@ function message(e: unknown): string {
  * (нет пароля в mail-code.json, отказ во входе, нет сети). Основной сервис сам пропускает
  * родителей из исправных IMAP-ящиков, поэтому браузер открывается только когда нужен.
  */
-export function combineSources(imap: ImapSource | null, browser: BrowserSource | null): FindCode {
+export function combineSources(imapSource: ImapSource | null, browser: BrowserSource | null): FindCode {
   return async (email, kind, sentAfterMs) => {
+    const imap = imapSource && (imapSource.size?.() ?? 1) > 0 ? imapSource : null;
     let imapError = '';
     if (imap) {
       try {
@@ -34,7 +38,7 @@ export function combineSources(imap: ImapSource | null, browser: BrowserSource |
     }
     if (!browser) throw new Error('в mail-code.json не задан ни один IMAP-аккаунт, а чтение через браузер выключено (browser.enabled)');
     try {
-      const found = await browser.find(email, kind, sentAfterMs, imap ? imap.healthyEmails() : []);
+      const found = await browser.find(email, kind, sentAfterMs, imap ? imap.healthyEmails(email) : []);
       return found.status === 'skipped' || found.status === 'later' ? { status: 'none' } : found;
     } catch (error) {
       // IMAP исправно просмотрел все ящики, а родителя алиаса браузер не определил (основной сервис

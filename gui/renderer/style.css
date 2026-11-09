@@ -66,7 +66,7 @@ main > label.toggle { display: flex; align-items: center; gap: 8px; font-size: 1
 
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row > button { flex-shrink: 0; }
-input[type="text"] {
+input[type="text"], input[type="password"], select {
   flex: 1 1 240px;
   min-width: 0;
   max-width: 100%;
@@ -77,7 +77,9 @@ input[type="text"] {
   background: #101216;
   color: #e8ebf0;
 }
-input[type="text"]:focus { outline: none; border-color: #2f6fed; }
+input[type="text"]:focus, input[type="password"]:focus, select:focus { outline: none; border-color: #2f6fed; }
+select { flex: 0 1 320px; cursor: pointer; }
+main > .row { margin-bottom: 4px; }
 
 .result {
   margin-top: 10px;
@@ -94,6 +96,7 @@ input[type="text"]:focus { outline: none; border-color: #2f6fed; }
 .result.busy { color: #8b93a1; }
 
 .result.cmd { flex: 1 1 300px; margin-top: 0; font-size: 13px; color: #b8bfca; }
+.result-meta { display: block; margin-top: 4px; font: 12px "Segoe UI", system-ui, sans-serif; color: #8b93a1; }
 
 .hint { margin-top: 8px; font-size: 12px; line-height: 1.5; color: #8b93a1; overflow-wrap: anywhere; }
 .hint code { color: #8b93a1; }
@@ -117,6 +120,34 @@ table { width: 100%; min-width: 540px; border-collapse: collapse; font-size: 13p
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #22262d; }
 th { color: #8b93a1; font-weight: 600; font-size: 12px; }
 td { font-family: Consolas, monospace; }
+
+/* Родители */
+table.parents { min-width: 820px; }
+.parents td { font-family: inherit; vertical-align: middle; }
+.parents .email { font-family: Consolas, monospace; color: #e8ebf0; }
+.parents .sub { font-size: 11px; color: #8b93a1; margin-top: 2px; }
+.parents tr.archived td { opacity: 0.55; }
+.parents tr.details > td { background: #15181d; padding: 12px 14px 14px; }
+.parents tr.details.archived > td { opacity: 1; }
+.parents progress { display: block; width: 90px; height: 6px; margin-top: 4px; appearance: none; border: none; border-radius: 3px; background: #262a31; }
+.parents progress::-webkit-progress-bar { background: #262a31; border-radius: 3px; }
+.parents progress::-webkit-progress-value { background: #2f6fed; border-radius: 3px; }
+button.expand { padding: 2px 9px; font-size: 12px; }
+button.danger { color: #e28b6a; border-color: #5c3a2b; }
+.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+.switch input { width: 16px; height: 16px; margin: 0; cursor: pointer; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: #8b93a1; vertical-align: 1px; }
+.dot.ok { background: #7ee2a8; }
+.dot.bad { background: #e2a07e; }
+.dot.wait { background: #5c6370; }
+.muted { color: #5c6370; }
+.details-grid { display: grid; gap: 14px; }
+.field > label { display: block; margin-bottom: 6px; font-size: 12px; color: #8b93a1; }
+.field .hint { margin-top: 6px; }
+.result-line { min-height: 18px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.result-line.ok { color: #7ee2a8; }
+.result-line.err { color: #e28b6a; }
+.result-line.busy { color: #8b93a1; }
 
 .pager { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 12px; }
 .pager button { padding: 5px 12px; }

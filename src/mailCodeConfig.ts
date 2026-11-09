@@ -49,18 +49,26 @@ export interface BrowserFallbackConfig {
   /** Не чаще одного прохода по почте в браузере на алиас: каждый проход кликает по письмам. */
   pollIntervalMs: number;
 }
+export interface RegistryConfig {
+  /**
+   * База основного сервиса (родители и алиасы), чтобы искать письмо только в ящике родителя алиаса.
+   * Пусто — CODES_DB от окна приложения или ./data/codes.db рядом с mail-code.json. Нет базы — поиск во всех ящиках.
+   */
+  dbFile: string;
+}
 export interface MailCodeConfig {
   grpc: GrpcConfig;
   imap: ImapConfig;
   browser: BrowserFallbackConfig;
+  registry: RegistryConfig;
   /** Домены обслуживаемых ящиков; адрес с другим доменом — UNKNOWN_MAILBOX. */
   domains: string[];
   /** Письмо относится к виду, если подходит под его правило и не подходит под правило другого вида. */
   kinds: Record<MailKind, MailKindRule>;
 }
 
-/** Пароль-заглушка из mail-code.example.json. */
-const EXAMPLE_PASSWORD = 'xxxx-xxxx-xxxx-xxxx';
+/** Пароль-заглушка из примера mail-code.json. */
+export const EXAMPLE_PASSWORD = 'xxxx-xxxx-xxxx-xxxx';
 
 // Правила kinds — черновик до образцов писем GGPass: тему и отправителя уточнить по реальным письмам.
 const SIX_DIGITS: CodePattern[] = [{ name: 'code-6', regex: '(?:code|код)[^0-9]{0,40}(\\d{6})(?!\\d)' }];
@@ -69,6 +77,7 @@ export const MAIL_CODE_DEFAULTS: MailCodeConfig = {
   grpc: { host: '0.0.0.0', port: 50051, maxWaitSeconds: 120, pollIntervalMs: 3000 },
   imap: { host: 'imap.mail.me.com', port: 993, accounts: [], reconnectDelayMs: 30000 },
   browser: { enabled: true, apiUrl: '', pollIntervalMs: 15000 },
+  registry: { dbFile: '' },
   domains: ['icloud.com'],
   kinds: {
     CODE_KIND_SIGN_UP: { subject: 'verif|confirm|sign.?up|регистрац|подтвержд', patterns: SIX_DIGITS },
@@ -81,7 +90,7 @@ export function loadMailCodeConfig(file = process.env.MAIL_CODE_CONFIG ?? 'mail-
   if (!existsSync(p)) {
     throw new Error(`не найден ${p} — скопируйте mail-code.example.json в mail-code.json и впишите app-specific пароли родителей`);
   }
-  const cfg = merge(MAIL_CODE_DEFAULTS, JSON.parse(readFileSync(p, 'utf8')));
+  const cfg = merge(structuredClone(MAIL_CODE_DEFAULTS), JSON.parse(readFileSync(p, 'utf8')));
   cfg.domains = cfg.domains.map(domain => domain.toLowerCase());
   for (const account of cfg.imap.accounts) {
     if (!account.email || !account.password) throw new Error('imap.accounts: у каждого аккаунта нужны email и password');
@@ -94,6 +103,8 @@ export function loadMailCodeConfig(file = process.env.MAIL_CODE_CONFIG ?? 'mail-
   }
   if (cfg.browser.pollIntervalMs < 1000) throw new Error('browser.pollIntervalMs: не меньше 1000');
   cfg.browser.apiUrl = (cfg.browser.apiUrl || process.env.CODES_API_URL || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+  const dbFile = cfg.registry.dbFile || process.env.CODES_DB || './data/codes.db';
+  cfg.registry.dbFile = path.isAbsolute(dbFile) ? dbFile : path.join(path.dirname(p), dbFile);
   // Кривой regex в правилах вида письма молча ломал бы выдачу кодов: падаем сразу.
   for (const kind of MAIL_KINDS) {
     const rule = cfg.kinds[kind];

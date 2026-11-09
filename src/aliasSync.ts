@@ -1,7 +1,6 @@
-import type { Frame } from 'puppeteer-core';
+import type { Browser, Frame } from 'puppeteer-core';
 import type { Config } from './config';
-import type { Db } from './db';
-import { getBrowser } from './browser';
+import type { Services } from './services';
 import { AliasBusyError, ApiError } from './errors';
 
 // Hide My Email markup. Button texts follow the browser language, so only classes and names are used.
@@ -25,8 +24,7 @@ function isAliasFrame(candidate: Frame): boolean {
   } catch { return false; }
 }
 
-export async function getAliasFrame(cfg: Config): Promise<Frame> {
-  const browser = await getBrowser(cfg.browser);
+export async function getAliasFrame(cfg: Config, browser: Browser, parentEmail: string): Promise<Frame> {
   let frame: Frame | undefined;
   const pages = await browser.pages();
   for (const page of pages) {
@@ -49,7 +47,7 @@ export async function getAliasFrame(cfg: Config): Promise<Frame> {
       }
     }
   }
-  if (!frame) throw new ApiError(503, 'В профиле Dolphin откройте iCloud → Функции iCloud+ → Скрыть e-mail и повторите загрузку.');
+  if (!frame) throw new ApiError(503, `В профиле родителя ${parentEmail} откройте iCloud → Функции iCloud+ → Скрыть e-mail и повторите загрузку.`);
   return frame;
 }
 
@@ -93,20 +91,22 @@ async function readAliasList(frame: Frame, parentEmail: string, timeout: number,
   return unique;
 }
 
-let busy = false;
-export async function withAliasOperation<T>(operation: () => Promise<T>): Promise<T> {
-  if (busy) throw new AliasBusyError();
-  busy = true;
-  try { return await operation(); } finally { busy = false; }
+// Операции в браузере идут по одной на родителя: у каждого родителя свой профиль, и разные родители друг другу не мешают.
+const busy = new Set<number>();
+export async function withAliasOperation<T>(parentId: number, operation: () => Promise<T>): Promise<T> {
+  if (busy.has(parentId)) throw new AliasBusyError();
+  busy.add(parentId);
+  try { return await operation(); } finally { busy.delete(parentId); }
 }
 
-export async function syncAliases(cfg: Config, db: Db) {
-  return withAliasOperation(async () => {
-  const parent = db.activeParent();
-  if (!parent) throw new ApiError(503, 'Сначала выберите родителя во вкладке «Родители».');
-  const frame = await getAliasFrame(cfg);
-  const unique = await readAliasSnapshot(frame, parent.email, cfg.browser.actionTimeoutMs);
-  const { added, removed } = db.importAliases(parent.id, unique);
-  return { parent: parent.email, found: unique.length, added, removed, total: db.countAliases(parent.id) };
+export async function syncAliases(svc: Services, parentId: number) {
+  const parent = svc.db.parentById(parentId);
+  if (!parent) throw new ApiError(404, 'Родитель не найден.');
+  const browser = await svc.pool.get(parent);
+  return withAliasOperation(parent.id, async () => {
+    const frame = await getAliasFrame(svc.cfg, browser, parent.email);
+    const unique = await readAliasSnapshot(frame, parent.email, svc.cfg.browser.actionTimeoutMs);
+    const { added, removed } = svc.db.importAliases(parent.id, unique);
+    return { parent: parent.email, found: unique.length, added, removed, total: svc.db.countAliases(parent.id) };
   });
 }

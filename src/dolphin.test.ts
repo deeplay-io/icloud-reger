@@ -1,14 +1,14 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { connectProfile, ensureDolphinApi } = require('./dolphin');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { connectProfile, ensureDolphinApi } from './dolphin';
 
-const reply = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
+const reply = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => data as any });
 const noEndpoint = async () => null;
 // Never let the suite reach (or launch) the real Dolphin Anty.
 const apiUp = async () => ({ launched: false, coldStart: false });
 
 test('already running without CDP requests explicit restart and never stops the profile', async () => {
-  const calls = [];
+  const calls: string[] = [];
   await assert.rejects(connectProfile('123456789', async url => {
     calls.push(url);
     return reply({ success: false, message: 'Profile ID 123456789 already running' }, 400);
@@ -18,7 +18,7 @@ test('already running without CDP requests explicit restart and never stops the 
 });
 
 test('reuses live CDP belonging to the requested profile without starting or stopping it', async () => {
-  const calls = [];
+  const calls: string[] = [];
   const result = await connectProfile('123', async url => {
     calls.push(url);
     return reply({ webSocketDebuggerUrl: 'ws://127.0.0.1:54321/devtools/browser/profile-123' });
@@ -28,7 +28,7 @@ test('reuses live CDP belonging to the requested profile without starting or sto
 });
 
 test('stale port reused by another browser is rejected', async () => {
-  const calls = [];
+  const calls: string[] = [];
   await assert.rejects(connectProfile('123', async url => {
     calls.push(url);
     return url.endsWith('/json/version')
@@ -39,7 +39,7 @@ test('stale port reused by another browser is rejected', async () => {
 });
 
 test('explicit restart stops only the requested profile and reconnects to its new port', async () => {
-  const calls = [];
+  const calls: string[] = [];
   const result = await connectProfile('123', async url => {
     calls.push(url);
     if (url.endsWith('/stop')) return reply({ success: true });
@@ -55,7 +55,7 @@ test('explicit restart stops only the requested profile and reconnects to its ne
 });
 
 test('failed stop does not attempt to start another instance', async () => {
-  const calls = [];
+  const calls: string[] = [];
   await assert.rejects(connectProfile('123', async url => {
     calls.push(url);
     return reply({ success: false, message: 'access denied' }, 401);
@@ -67,13 +67,13 @@ test('failed stop does not attempt to start another instance', async () => {
 // Fake clock: sleep advances time instantly.
 function fakeClock() {
   let t = 0;
-  return { now: () => t, sleep: async ms => { t += ms; } };
+  return { now: () => t, sleep: async (ms: number) => { t += ms; } };
 }
 
 test('launches Dolphin when its API is down and waits until it answers', async () => {
   const clock = fakeClock();
-  const launched = [];
-  const statuses = [];
+  const launched: string[] = [];
+  const statuses: string[] = [];
   let probes = 0;
   const result = await ensureDolphinApi(async () => {
     if (++probes < 4) throw new TypeError('fetch failed');
@@ -81,12 +81,12 @@ test('launches Dolphin when its API is down and waits until it answers', async (
   }, {
     ...clock,
     isRunning: async () => false,
-    findExe: async () => 'C:\Program Files\Dolphin Anty\Dolphin Anty.exe',
-    launch: async exe => { launched.push(exe); },
-    onStatus: text => statuses.push(text),
+    findExe: async () => 'C:\\Program Files\\Dolphin Anty\\Dolphin Anty.exe',
+    launch: async (exe: string) => { launched.push(exe); },
+    onStatus: (text: string) => { statuses.push(text); },
   });
   assert.deepEqual(result, { launched: true, coldStart: true });
-  assert.deepEqual(launched, ['C:\Program Files\Dolphin Anty\Dolphin Anty.exe']);
+  assert.deepEqual(launched, ['C:\\Program Files\\Dolphin Anty\\Dolphin Anty.exe']);
   assert.equal(probes, 4);
   assert.ok(statuses.some(s => s.includes('запускаю')));
 });
@@ -144,7 +144,7 @@ test('live CDP of the profile is reused without touching the Dolphin API', async
 
 test('after a cold start, transient /start failures are retried', async () => {
   const clock = fakeClock();
-  const calls = [];
+  const calls: string[] = [];
   let starts = 0;
   const result = await connectProfile('123', async url => {
     calls.push(url);

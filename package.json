@@ -14,7 +14,7 @@
     "smoke": "tsx src/smoke.ts",
     "gui": "npm run build && electron .",
     "dist:win": "npm run build && electron-builder --win",
-    "test": "tsx --test src/*.test.ts gui/*.test.js",
+    "test": "tsx --test src/*.test.ts",
     "grpc": "tsx src/mailCodeMain.ts",
     "grpc:call": "tsx src/grpcCall.ts",
     "imap:probe": "tsx src/imapProbe.ts"

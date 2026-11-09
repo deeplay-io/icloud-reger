@@ -1,283 +1,485 @@
-const $ = (s) => document.querySelector(s);
+const $ = (s, root = document) => root.querySelector(s);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-let currentTab = 'aliases';
+const TIME_ZONE = 'Asia/Novosibirsk';
+const timeOf = ms => new Date(ms).toLocaleTimeString('ru-RU', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit' });
+const dateTimeOf = ms => new Date(ms).toLocaleString('ru-RU', { timeZone: TIME_ZONE, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const whenOf = ms => ms <= Date.now() ? 'сейчас' : timeOf(ms);
+/** Текст ошибки как законченное предложение, чтобы следующее не прилипало к нему. */
+const sentence = text => { const t = String(text || '').trim(); return /[.!?…]$/.test(t) ? t : t + '.'; };
 
-const ALIASES_PER_PAGE = 20;
-let aliasRows = [];
-let aliasPage = 1;
-
-function renderAliasTable() {
-  const container = $('#alias-table');
-  if (!container) return;
-  const pages = Math.max(1, Math.ceil(aliasRows.length / ALIASES_PER_PAGE));
-  aliasPage = Math.min(Math.max(1, aliasPage), pages);
-  const start = (aliasPage - 1) * ALIASES_PER_PAGE;
-  const pageRows = aliasRows.slice(start, start + ALIASES_PER_PAGE);
-  const pager = pages > 1
-    ? '<div class="pager">' +
-      '<button class="secondary" data-page="1"' + (aliasPage === 1 ? ' disabled' : '') + ' title="Первая страница">«</button>' +
-      '<button class="secondary" data-page="' + (aliasPage - 1) + '"' + (aliasPage === 1 ? ' disabled' : '') + '>‹ Назад</button>' +
-      '<span class="pager-info">Стр. ' + aliasPage + ' из ' + pages + ' · ' + (start + 1) + '–' + (start + pageRows.length) + ' из ' + aliasRows.length + '</span>' +
-      '<button class="secondary" data-page="' + (aliasPage + 1) + '"' + (aliasPage === pages ? ' disabled' : '') + '>Вперёд ›</button>' +
-      '<button class="secondary" data-page="' + pages + '"' + (aliasPage === pages ? ' disabled' : '') + ' title="Последняя страница">»</button>' +
-      '</div>'
-    : '';
-  container.innerHTML =
-    '<div class="table-scroll"><table><tr><th>алиас</th><th>имя</th><th>родитель (id)</th><th>создан</th></tr>' +
-    pageRows.map((a) => '<tr><td>' + escapeHtml(a.email) + '</td><td>' + escapeHtml(a.name) + '</td><td>' + escapeHtml(a.parent_id) + '</td><td>' + escapeHtml(a.created_at) + '</td></tr>').join('') +
-    '</table></div>' + pager;
-  container.querySelectorAll('.pager button').forEach((btn) => {
-    btn.onclick = () => { aliasPage = Number(btn.dataset.page); renderAliasTable(); };
-  });
-}
-
-async function importAliases() {
-  const button = $('#sync-aliases');
-  const out = $('#sync-result');
-  button.disabled = true;
-  out.textContent = 'Загружаю список из iCloud…';
-  try {
-    const result = await callApi('POST', '/aliases/sync');
-    if (result.status !== 200) throw new Error(result.body?.error || 'Не удалось загрузить алиасы.');
-    aliasPage = 1;
-    await loadTab();
-    const status = $('#sync-result');
-    if (status) status.textContent = `Найдено в iCloud: ${result.body.found}. Добавлено: ${result.body.added}. Удалено: ${result.body.removed ?? 0}. У родителя в базе: ${result.body.total}.`;
-    await refresh();
-  } catch (e) {
-    out.textContent = e.message;
-  } finally { button.disabled = false; }
-}
-
-function syncControls() {
-  return '<div class="row"><button id="sync-aliases" class="secondary">Загрузить из iCloud</button></div><div id="sync-result" class="hint" role="status"></div>';
-}
-
-async function connectDolphin(restart = false) {
-  const button = $('#btn-dolphin-connect');
-  const restartButton = $('#btn-dolphin-restart');
-  const out = $('#dolphin-result');
-  button.disabled = true;
-  restartButton.disabled = true;
-  restartButton.hidden = true;
-  out.className = 'result busy';
-  out.textContent = 'Подключаю профиль Dolphin Anty…';
-  try {
-    const result = await window.api.invoke('dolphin:connect', $('#dolphin-profile-id').value, restart);
-    restartButton.hidden = result.code !== 'PROFILE_REQUIRES_RESTART';
-    out.className = 'result ' + (result.ok ? 'ok' : 'err');
-    out.textContent = result.ok
-      ? 'Профиль подключён: ' + result.cdpUrl + '. Настройки сохранены. Для чтения писем должны быть настроены селекторы iCloud.'
-      : result.error;
-    await refresh();
-  } catch (e) {
-    out.className = 'result err';
-    out.textContent = e.message || String(e);
-  } finally {
-    button.disabled = false;
-    restartButton.disabled = false;
-  }
-}
+let currentTab = 'parents';
 
 async function callApi(method, p, body) {
   return window.api.invoke('api:proxy', { method, path: p, body });
 }
 
-function setChip(id, ok, text) {
+function apiError(r, fallback) {
+  if (r.status === 0) return 'Сервис не запущен: нажмите «▶ Запустить сервис».';
+  return (r.body && r.body.error) || fallback + ' (HTTP ' + r.status + ')';
+}
+
+function setChip(id, ok, text, title = '') {
   const el = $(id);
   el.textContent = text;
+  el.title = title;
   el.className = 'chip ' + (ok ? 'ok' : 'bad');
 }
 
-async function refresh() {
-  try {
-    const h = await callApi('GET', '/health');
-    if (h.status !== 200 || typeof h.body !== 'object') throw new Error('bad health');
-    setChip('#chip-svc', true, 'сервис: работает');
-    setChip('#chip-cdp', h.body.browser === 'connected', 'браузер: ' + h.body.browser);
-    setChip('#chip-parent', !!h.body.activeParent, 'родитель: ' + (h.body.activeParent || '—'));
-    setChip('#chip-aliases', true, 'алиасов в базе: ' + h.body.aliases);
-    const generator = h.body.generator;
-    const timeOptions = { timeZone: 'Asia/Novosibirsk' };
-    const nextTime = generator?.nextRunAt ? new Date(generator.nextRunAt).toLocaleTimeString('ru-RU', timeOptions) : 'ожидание';
-    const hour = generator?.currentHourStart ? new Date(generator.currentHourStart).toLocaleTimeString('ru-RU', { ...timeOptions, hour: '2-digit', minute: '2-digit' }) : '—';
-    setChip('#chip-generator', !!generator?.enabled && !generator.limitReached,
-      !generator?.enabled ? 'авто: выключено' : generator.limitReached ? 'авто: лимит достигнут' : `авто: следующее в ${nextTime} · создано с ${hour}: ${generator.createdThisHour}/${generator.hourlyLimit}`);
-    $('#chip-generator').title = generator
-      ? `Подтверждённые создания за текущий час (Новосибирск). Счётчик обновляется каждый час. Запросов за последние 60 минут: ${generator.attemptsLastHour}/${generator.hourlyLimit}; ограничение сохраняется при смене часа.`
-      : '';
-  } catch {
-    setChip('#chip-svc', false, 'сервис: не запущен');
-    setChip('#chip-cdp', false, 'браузер: —');
-    setChip('#chip-parent', false, 'родитель: —');
-    setChip('#chip-aliases', false, 'алиасов: —');
-    setChip('#chip-generator', false, 'авто: —');
-  }
-  const st = await window.api.invoke('svc:state');
-  $('#btn-start').disabled = st.running;
-  $('#btn-stop').disabled = !st.running;
-  const grpc = await window.api.invoke('grpc:state');
-  setChip('#chip-grpc', grpc.running, 'gRPC: ' + (grpc.running ? 'работает' : 'не запущен'));
-  $('#btn-grpc-start').disabled = grpc.running;
-  $('#btn-grpc-stop').disabled = !grpc.running;
-}
+// ---------- Родители ----------
 
-const UPDATE_TEXT = {
-  off: () => 'dev-сборка',
-  'no-token': () => 'обновления: нет update.token в config.json',
-  checking: () => 'проверка обновлений…',
-  latest: () => 'актуальная',
-  downloading: (u) => 'скачивается ' + u.next + (u.percent != null ? ' (' + u.percent + '%)' : ''),
-  ready: (u) => 'готово обновление ' + u.next,
-  error: () => 'ошибка обновления',
+let parents = [];
+let renderedSignature = '';
+const expanded = new Set();
+/** Итог последнего действия по родителю: переживает перерисовку таблицы. */
+const results = new Map();
+
+const BROWSER_TEXT = {
+  none: p => p.profile ? 'ещё не подключался' : 'нет профиля',
+  connecting: () => 'подключаю…',
+  connected: () => 'подключён',
+  error: () => 'не подключён',
+};
+const GENERATOR_TEXT = {
+  archived: 'отключён',
+  off: 'выкл',
+  full: 'заполнен',
+  'waiting-browser': 'ждёт браузер',
+  scheduled: 'вкл',
+  creating: 'создаю…',
+};
+const IMAP_TEXT = {
+  none: ['нет пароля', 'wait', 'Коды gRPC читает только через браузер. Задайте app-specific пароль в настройках родителя.'],
+  unknown: ['пароль задан', 'wait', 'gRPC-сервис не запущен или ещё не входил в ящик.'],
+  connected: ['подключён', 'ok', 'gRPC-сервис читает ящик по IMAP.'],
+  auth: ['вход не принят', 'bad', ''],
+  error: ['нет связи', 'bad', ''],
 };
 
-function renderUpdate(u) {
-  const chip = $('#chip-update');
-  chip.textContent = 'версия ' + (u.version || '—') + ' · ' + (UPDATE_TEXT[u.status] || UPDATE_TEXT.off)(u);
-  chip.className = 'chip' + (u.status === 'latest' || u.status === 'ready' ? ' ok' : u.status === 'error' || u.status === 'no-token' ? ' bad' : '');
-  chip.title = u.error || '';
-  const button = $('#btn-update');
-  button.hidden = u.status !== 'ready';
-  button.textContent = 'Обновить до ' + u.next;
+function browserCell(p) {
+  if (p.archived) return '<span class="muted">—</span>';
+  const state = p.browser.state;
+  const cls = state === 'connected' ? 'ok' : state === 'error' || !p.profile ? 'bad' : 'wait';
+  return '<span title="' + escapeHtml(p.browser.error || p.browser.cdpUrl) + '"><span class="dot ' + cls + '"></span>' + escapeHtml(BROWSER_TEXT[state](p)) + '</span>';
 }
 
-async function installUpdate() {
-  if (!confirm('Остановить сервисы, установить обновление и перезапустить приложение? Работавшие сервисы запустятся снова.')) return;
-  $('#btn-update').disabled = true;
-  const r = await window.api.invoke('update:install');
-  if (!r.ok) {
-    alert(r.error);
-    $('#btn-update').disabled = false;
+function hourCell(p) {
+  const g = p.generator;
+  if (p.archived) return '—';
+  let text = g.createdThisHour + '/' + g.hourlyLimit;
+  if (g.enabled && !p.full) {
+    if (g.attemptsLastHour >= g.hourlyLimit && g.allowedAt > Date.now()) text += ' · лимит до ' + timeOf(g.allowedAt);
+    else if (g.nextRunAt) text += ' · ' + whenOf(g.nextRunAt);
+  }
+  return text;
+}
+
+function imapCell(p) {
+  const [text, cls, hint] = IMAP_TEXT[p.imap.state] || [p.imap.state, 'wait', ''];
+  return '<span title="' + escapeHtml(p.imap.error || hint) + '"><span class="dot ' + cls + '"></span>' + escapeHtml(text) + '</span>';
+}
+
+function browserDetail(p) {
+  if (p.archived) return 'Родитель отключён: сервис не подключает его профиль.';
+  if (!p.profile) return 'Укажите ID профиля Dolphin Anty с залогиненным iCloud этого родителя (или адрес CDP). Если Dolphin не запущен, сервис откроет его сам.';
+  const b = p.browser;
+  if (b.state === 'connected') return 'Подключён: ' + b.cdpUrl + '. Если профиль закрыть, сервис откроет его снова.';
+  if (b.state === 'connecting') return 'Подключаю профиль…';
+  if (b.state === 'error') return 'Ошибка: ' + sentence(b.error) + (b.code === 'PROFILE_REQUIRES_RESTART' ? ' Нажмите «Перезапустить профиль».' : ' Сервис повторит попытку сам через минуту или по кнопке «Подключить».');
+  return 'Сервис подключит профиль сам в течение 15 секунд.';
+}
+
+function imapDetail(p) {
+  const i = p.imap;
+  if (i.state === 'none') return 'Пароля нет: gRPC читает коды этого родителя только через браузер (медленнее, только открытая папка).';
+  const via = i.proxy ? ' Через прокси ' + i.proxy + '.' : '';
+  if (i.state === 'connected') return 'Пароль задан, gRPC-сервис читает ящик по IMAP.' + via;
+  if (i.state === 'unknown') return 'Пароль задан. Состояние появится, когда gRPC-сервис запущен и вошёл в ящик.' + via;
+  return 'Пароль задан, но ' + sentence(i.error || 'вход не удался') + via;
+}
+
+function syncDetail(p) {
+  const s = p.sync;
+  if (s.state === 'running') return 'Загрузка из iCloud идёт…';
+  if (s.state === 'ok') return 'Загрузка из iCloud ' + dateTimeOf(s.at) + ': ' + s.message + '. Дальше — раз в 6 часов и после каждого подключения профиля.';
+  if (s.state === 'error') return 'Загрузка из iCloud ' + dateTimeOf(s.at) + ' не удалась: ' + s.message;
+  return 'Алиасы загрузятся из iCloud сами, как только подключится профиль.';
+}
+
+function generatorDetail(p) {
+  const g = p.generator;
+  const parts = [];
+  if (p.full) parts.push('Достигнут лимит ' + p.limit + ' алиасов: авторегистрация у этого родителя остановлена, коды читаются.');
+  else if (g.state === 'waiting-browser') parts.push('Время создания подошло, но браузер родителя не подключён.');
+  if (g.last) parts.push('Последняя авторегистрация ' + dateTimeOf(g.last.at) + ': ' + g.last.message);
+  return parts.join(' ');
+}
+
+function detailsHtml(p) {
+  return '<div class="details-grid">' +
+    '<div class="field"><label>Профиль Dolphin Anty (ID) или адрес CDP</label>' +
+      '<div class="row"><input type="text" data-input="profile" inputmode="numeric" spellcheck="false" placeholder="902053376" value="' + escapeHtml(p.profile) + '" />' +
+      '<button class="secondary" data-action="save-profile">Сохранить</button>' +
+      '<button class="secondary" data-action="connect">Подключить</button>' +
+      '<button class="secondary" data-action="restart">Перезапустить профиль</button></div>' +
+      '<div class="hint" data-f="browser-detail"></div></div>' +
+    '<div class="field"><label>IMAP для gRPC: app-specific пароль (account.apple.com → Вход и безопасность → Пароли приложений)</label>' +
+      '<div class="row"><input type="password" data-input="imap-password" autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx" />' +
+      '<input type="text" data-input="imap-proxy" spellcheck="false" placeholder="прокси, необязательно: socks5://…" value="' + escapeHtml(p.imap.proxy) + '" />' +
+      '<button class="secondary" data-action="save-imap">Проверить и сохранить</button>' +
+      '<button class="secondary" data-action="remove-imap">Удалить пароль</button></div>' +
+      '<div class="hint" data-f="imap-detail"></div></div>' +
+    '<div class="field"><label>Метка для авторегистрации (без номера и @icloud.com; пусто — начало e-mail родителя)</label>' +
+      '<div class="row"><input type="text" data-input="prefix" maxlength="60" spellcheck="false" placeholder="' + escapeHtml(p.email.split('@')[0]) + '" value="' + escapeHtml(p.generator.customPrefix) + '" />' +
+      '<button class="secondary" data-action="save-prefix">Сохранить метку</button></div>' +
+      '<div class="hint" data-f="next-name"></div></div>' +
+    '<div class="field"><label>Создать алиас вручную (адрес назначит iCloud; лимит 5 в час общий с авторегистрацией)</label>' +
+      '<div class="row"><input type="text" data-input="alias-name" maxlength="100" spellcheck="false" value="' + escapeHtml(p.generator.nextName || '') + '" />' +
+      '<button class="secondary" data-action="create">Создать в iCloud</button>' +
+      '<button class="secondary" data-action="sync">Загрузить из iCloud</button></div>' +
+      '<div class="hint" data-f="sync"></div>' +
+      '<div class="hint" data-f="generator"></div></div>' +
+    '<div class="row">' +
+      '<button class="secondary" data-action="show-aliases">Алиасы родителя →</button>' +
+      '<button class="secondary" data-action="archive" data-f="archive"></button>' +
+      '<button class="secondary danger" data-action="delete" title="Только для родителя без алиасов, например добавленного по ошибке">Удалить</button>' +
+    '</div>' +
+    '<div class="result-line" data-f="result" role="status"></div>' +
+  '</div>';
+}
+
+function rowHtml(p) {
+  const open = expanded.has(p.id);
+  return '<tr class="parent-row" data-id="' + p.id + '">' +
+    '<td><button class="secondary expand" data-action="expand" title="Настройки родителя">' + (open ? '▾' : '▸') + '</button></td>' +
+    '<td><div class="email">' + escapeHtml(p.email) + '</div><div class="sub" data-f="profile"></div></td>' +
+    '<td data-f="browser"></td>' +
+    '<td data-f="aliases"></td>' +
+    '<td><label class="switch"><input type="checkbox" data-toggle="generator" /><span data-f="generator-state"></span></label></td>' +
+    '<td data-f="hour"></td>' +
+    '<td data-f="imap"></td>' +
+    '</tr>' +
+    '<tr class="details" data-details="' + p.id + '"' + (open ? '' : ' hidden') + '><td colspan="7">' + detailsHtml(p) + '</td></tr>';
+}
+
+/** Обновляет только ячейки состояния: поля ввода (в том числе пароль) при обновлении раз в 5 с не трогаются. */
+function updateRow(p) {
+  const row = $('tr[data-id="' + p.id + '"]');
+  const details = $('tr[data-details="' + p.id + '"]');
+  if (!row || !details) return;
+  const html = (root, field, value) => {
+    const el = root.querySelector('[data-f="' + field + '"]');
+    if (el && el.innerHTML !== value) el.innerHTML = value;
+  };
+  const text = (root, field, value) => {
+    const el = root.querySelector('[data-f="' + field + '"]');
+    if (el && el.textContent !== value) el.textContent = value;
+  };
+  row.classList.toggle('archived', p.archived);
+  details.classList.toggle('archived', p.archived);
+  text(row, 'profile', p.profile ? 'профиль ' + p.profile : 'профиль не задан');
+  html(row, 'browser', browserCell(p));
+  html(row, 'aliases', '<span>' + p.aliases + '/' + p.limit + '</span><progress max="' + p.limit + '" value="' + Math.min(p.aliases, p.limit) + '"></progress>');
+  const box = row.querySelector('[data-toggle="generator"]');
+  if (!box.dataset.busy) {
+    box.checked = p.generator.enabled;
+    box.disabled = p.archived;
+  }
+  text(row, 'generator-state', GENERATOR_TEXT[p.generator.state] || p.generator.state);
+  text(row, 'hour', hourCell(p));
+  html(row, 'imap', imapCell(p));
+  text(details, 'browser-detail', browserDetail(p));
+  text(details, 'imap-detail', imapDetail(p));
+  text(details, 'next-name', p.generator.nextName ? 'Следующая метка: ' + p.generator.nextName : 'Метка не подходит: задайте её вручную.');
+  text(details, 'sync', syncDetail(p));
+  text(details, 'generator', generatorDetail(p));
+  text(details, 'archive', p.archived ? 'Вернуть в работу' : 'Отключить');
+  details.querySelector('[data-action="delete"]').hidden = p.aliases > 0;
+  for (const action of ['save-profile', 'connect', 'restart', 'create', 'sync']) {
+    details.querySelector('[data-action="' + action + '"]').disabled = p.archived;
+  }
+  const result = results.get(p.id);
+  const out = details.querySelector('[data-f="result"]');
+  if (result && out.textContent !== result.text) {
+    out.textContent = result.text;
+    out.className = 'result-line ' + result.cls;
   }
 }
 
-async function requestCode() {
-  const email = $('#code-email').value.trim();
-  const out = $('#code-result');
-  if (!email) {
-    out.textContent = 'Введите e-mail алиаса.';
-    out.className = 'result err';
+async function refreshParents() {
+  const list = $('#parents-list');
+  if (!list) return;
+  const r = await callApi('GET', '/parents');
+  if (!$('#parents-list')) return;
+  if (r.status !== 200 || !Array.isArray(r.body)) {
+    list.innerHTML = '<div class="hint">' + escapeHtml(r.status === 0 ? 'Запустите сервис: родители и их настройки хранятся в его базе.' : apiError(r, 'Не удалось загрузить родителей')) + '</div>';
+    renderedSignature = '';
     return;
   }
-  out.className = 'result busy';
-  out.textContent = 'Запрашиваю… (сервис откроет почту родителя в браузере)';
-  const r = await callApi('GET', '/code?email=' + encodeURIComponent(email));
-  if (r.status === 200) {
-    out.textContent = String(r.body);
-    out.className = 'result ok';
-  } else {
-    out.textContent = (r.body && r.body.error) || 'HTTP ' + r.status;
-    out.className = 'result err';
+  parents = r.body;
+  // Набор или порядок строк изменился (добавили, отключили, удалили) — перерисовываем таблицу целиком.
+  const signature = parents.map(p => p.id + (p.archived ? 'a' : '')).join(',');
+  if (signature !== renderedSignature) {
+    renderedSignature = signature;
+    list.innerHTML = parents.length
+      ? '<div class="table-scroll"><table class="parents"><thead><tr><th></th><th>родитель</th><th>браузер</th><th>алиасы</th><th>регистрация</th><th>за час · следующее</th><th>IMAP</th></tr></thead><tbody>' +
+        parents.map(rowHtml).join('') + '</tbody></table></div>'
+      : '<div class="hint">Родителей пока нет. Добавьте первого: e-mail iCloud-учётки и ID профиля Dolphin Anty, в котором она залогинена.</div>';
+  }
+  parents.forEach(updateRow);
+}
+
+async function addParent() {
+  const email = $('#new-parent-email').value.trim();
+  const profile = $('#new-parent-profile').value.trim();
+  const out = $('#add-parent-result');
+  if (!email) { out.textContent = 'Введите e-mail родителя.'; return; }
+  const button = $('#add-parent');
+  button.disabled = true;
+  try {
+    const r = await callApi('POST', '/parents', { email, profile });
+    if (r.status !== 200) throw new Error(apiError(r, 'Не удалось добавить родителя'));
+    $('#new-parent-email').value = '';
+    $('#new-parent-profile').value = '';
+    expanded.add(r.body.id);
+    results.set(r.body.id, { text: 'Добавлен. Сервис подключит профиль и загрузит алиасы сам. Задайте IMAP-пароль, а авторегистрацию включите переключателем в строке.', cls: 'ok' });
+    out.textContent = '';
+    await refreshParents();
+  } catch (e) {
+    out.textContent = e.message;
+  } finally { button.disabled = false; }
+}
+
+async function toggleGenerator(id, box) {
+  box.dataset.busy = '1';
+  box.disabled = true;
+  try {
+    const r = await callApi('PATCH', '/parents/' + id, { generatorEnabled: box.checked });
+    if (r.status !== 200) throw new Error(apiError(r, 'Не удалось переключить авторегистрацию'));
+    results.set(id, { text: r.body.generator.enabled ? 'Авторегистрация включена: первое создание — через обычный интервал.' : 'Авторегистрация выключена. Коды и загрузка из iCloud работают.', cls: 'ok' });
+  } catch (e) {
+    box.checked = !box.checked;
+    results.set(id, { text: e.message, cls: 'err' });
+    expanded.add(id);
+    const details = $('tr[data-details="' + id + '"]');
+    if (details) details.hidden = false;
+    const expand = $('tr[data-id="' + id + '"] [data-action="expand"]');
+    if (expand) expand.textContent = '▾';
+  } finally {
+    delete box.dataset.busy;
+    box.disabled = false;
+    await refreshParents();
   }
 }
 
-async function loadAliases() {
-  const [r, naming] = await Promise.all([callApi('GET', '/aliases'), callApi('GET', '/generator/settings')]);
-  const apiUp = naming.status === 200;
-  const settings = apiUp ? naming.body : {};
-  aliasRows = Array.isArray(r.body) ? r.body : [];
-  const generatorHint = (enabled) => enabled
-    ? 'Включена: следующее создание — по расписанию в чипе «авто».'
-    : 'Выключена: новые алиасы не создаются; коды и загрузка из iCloud работают.';
-  $('#tab-content').innerHTML =
-    syncControls() +
-    '<label class="toggle"><input id="generator-enabled" type="checkbox"' + (settings.enabled ? ' checked' : '') + (apiUp ? '' : ' disabled') + ' /> Авторегистрация новых алиасов (до 5 в час)</label>' +
-    '<div id="generator-result" class="hint" role="status">' + (apiUp ? generatorHint(settings.enabled) : 'Запустите сервис, чтобы включить или выключить.') + '</div>' +
-    '<label for="alias-name-prefix">Имя для авторегистрации (без номера и @icloud.com)</label>' +
-    '<div class="row"><input id="alias-name-prefix" type="text" maxlength="60" placeholder="mybox" value="' + escapeHtml(settings.namePrefix) + '" /><button id="save-alias-prefix" class="secondary">Сохранить имя</button></div>' +
-    '<div id="prefix-result" class="hint" role="status">Следующий: ' + escapeHtml(settings.nextName || 'выберите родителя') + '</div>' +
-    '<div class="row">' +
-    '  <input id="add-alias-name" type="text" maxlength="100" placeholder="метка нового алиаса" value="' + escapeHtml(settings.nextName || '') + '" />' +
-    '  <button id="add-alias" class="secondary">Создать в iCloud</button>' +
-    '</div>' +
-    '<div class="hint">Адрес назначит iCloud. В базу попадёт только подтверждённый адрес с сайта.</div>' +
-    '<div id="create-result" class="hint" role="status"></div>' +
-    '<div id="alias-table"></div>';
-  renderAliasTable();
-  $('#sync-aliases').onclick = importAliases;
-  $('#generator-enabled').onchange = async () => {
-    const box = $('#generator-enabled');
-    const out = $('#generator-result');
-    box.disabled = true;
+async function parentAction(id, action, button) {
+  const p = parents.find(x => x.id === id);
+  const details = $('tr[data-details="' + id + '"]');
+  if (!p || !details) return;
+  const input = name => details.querySelector('[data-input="' + name + '"]');
+  if (action === 'expand') {
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    details.hidden = !expanded.has(id);
+    button.textContent = expanded.has(id) ? '▾' : '▸';
+    return;
+  }
+  if (action === 'show-aliases') {
+    aliasState = { parent: String(id), q: '', page: 1 };
+    switchTab('aliases');
+    return;
+  }
+  const say = (text, cls) => {
+    results.set(id, { text, cls });
+    const out = details.querySelector('[data-f="result"]');
+    out.textContent = text;
+    out.className = 'result-line ' + cls;
+  };
+  const run = async (busyText, request, done, after) => {
+    button.disabled = true;
+    say(busyText, 'busy');
     try {
-      const result = await callApi('POST', '/generator/enabled', { enabled: box.checked });
-      if (result.status !== 200) throw new Error(result.body?.error || 'Не удалось сохранить.');
-      out.textContent = generatorHint(result.body.enabled);
-      await refresh();
+      const r = await request();
+      if (r.status !== 200) throw new Error(apiError(r, 'Не удалось'));
+      say(done(r.body), 'ok');
+      await refreshParents();
+      if (after) after();
     } catch (e) {
-      box.checked = !box.checked;
-      out.textContent = e.message;
-    } finally { box.disabled = false; }
+      say(e.message, 'err');
+    } finally { button.disabled = false; }
   };
-  $('#save-alias-prefix').onclick = async () => {
-    const button = $('#save-alias-prefix');
-    const out = $('#prefix-result');
-    button.disabled = true;
-    try {
-      const result = await callApi('POST', '/generator/settings', { namePrefix: $('#alias-name-prefix').value.trim() });
-      if (result.status !== 200) throw new Error(result.body?.error || 'Не удалось сохранить имя.');
-      out.textContent = 'Сохранено. Следующий: ' + result.body.nextName;
-      $('#add-alias-name').value = result.body.nextName || '';
-    } catch (e) { out.textContent = e.message; }
-    finally { button.disabled = false; }
+  const url = '/parents/' + id;
+  const nextNameToInput = () => {
+    const fresh = parents.find(x => x.id === id);
+    const field = $('tr[data-details="' + id + '"] [data-input="alias-name"]');
+    if (fresh && field) field.value = fresh.generator.nextName || '';
   };
-  $('#add-alias').onclick = async () => {
-    const name = $('#add-alias-name').value.trim();
-    const out = $('#create-result');
-    if (!name) { out.textContent = 'Введите метку для нового алиаса.'; return; }
-    const button = $('#add-alias');
-    button.disabled = true;
-    out.textContent = 'Создаю адрес в iCloud…';
-    try {
-      const rr = await callApi('POST', '/aliases/create', { name });
-      if (rr.status !== 200) throw new Error(rr.body?.error || 'Не удалось создать алиас.');
-      aliasPage = 1;
-      await loadAliases();
-      $('#create-result').textContent = 'Создан в iCloud и сохранён: ' + rr.body.email;
-      await refresh();
-    } catch (e) { out.textContent = e.message; }
-    finally { button.disabled = false; }
-  };
+  switch (action) {
+    case 'save-profile':
+      return run('Сохраняю профиль…', () => callApi('PATCH', url, { profile: input('profile').value.trim() }),
+        b => b.profile ? 'Профиль сохранён: ' + b.profile + '. Сервис подключит его сам и загрузит алиасы.' : 'Профиль убран: сервис больше не подключает браузер этого родителя.');
+    case 'connect':
+      return run('Подключаю профиль… Если Dolphin Anty не запущен, он откроется.', () => callApi('POST', url + '/connect', {}),
+        b => 'Профиль подключён: ' + b.browser.cdpUrl);
+    case 'restart':
+      if (!confirm('Перезапустить профиль ' + p.email + '? Окно профиля закроется и откроется заново.')) return;
+      return run('Перезапускаю профиль…', () => callApi('POST', url + '/connect', { restart: true }),
+        b => 'Профиль перезапущен и подключён: ' + b.browser.cdpUrl);
+    case 'save-imap': {
+      const password = input('imap-password').value.trim();
+      if (!password) { say('Введите app-specific пароль.', 'err'); return; }
+      return run('Проверяю вход в iCloud Mail…', () => callApi('PUT', url + '/imap', { password, proxy: input('imap-proxy').value.trim() }),
+        () => {
+          input('imap-password').value = '';
+          return 'Вход принят, пароль сохранён в mail-code.json. gRPC-сервис подхватит его без перезапуска.';
+        });
+    }
+    case 'remove-imap':
+      if (!confirm('Удалить IMAP-пароль ' + p.email + ' из mail-code.json? Коды этого родителя gRPC будет читать только через браузер.')) return;
+      return run('Удаляю пароль…', () => callApi('DELETE', url + '/imap'), () => 'Пароль удалён.');
+    case 'save-prefix':
+      return run('Сохраняю метку…', () => callApi('PATCH', url, { namePrefix: input('prefix').value.trim() }),
+        b => 'Сохранено. Следующая метка: ' + (b.generator.nextName || '—'), nextNameToInput);
+    case 'create': {
+      const name = input('alias-name').value.trim();
+      if (!name) { say('Введите метку нового алиаса.', 'err'); return; }
+      return run('Создаю адрес в iCloud…', () => callApi('POST', url + '/aliases', { name }),
+        b => 'Создан в iCloud и сохранён: ' + b.email, nextNameToInput);
+    }
+    case 'sync':
+      return run('Загружаю список из iCloud…', () => callApi('POST', url + '/sync', {}),
+        b => 'Найдено в iCloud: ' + b.found + '. Добавлено: ' + b.added + '. Удалено: ' + b.removed + '. В базе: ' + b.total + '.', nextNameToInput);
+    case 'archive':
+      if (!p.archived && !confirm('Отключить ' + p.email + '?\n\nСервис перестанет держать его профиль, загружать и создавать алиасы. Алиасы останутся в базе, коды по IMAP продолжат читаться.')) return;
+      return run(p.archived ? 'Возвращаю в работу…' : 'Отключаю…', () => callApi('PATCH', url, { archived: !p.archived }),
+        b => b.archived ? 'Родитель отключён.' : 'Родитель снова в работе: сервис подключит профиль сам.');
+    case 'delete':
+      if (!confirm('Удалить ' + p.email + ' из списка родителей?')) return;
+      return run('Удаляю…', () => callApi('DELETE', url), () => { expanded.delete(id); results.delete(id); return 'Удалён.'; });
+  }
 }
 
 async function loadParents() {
-  const r = await callApi('GET', '/parents');
-  const rows = Array.isArray(r.body) ? r.body : [];
   $('#tab-content').innerHTML =
-    syncControls() +
+    '<label for="new-parent-email">Добавить родителя</label>' +
     '<div class="row">' +
-    '  <input id="set-parent" type="text" placeholder="e-mail нового родительского аккаунта" />' +
-    '  <button id="set-parent-btn" class="secondary">Сделать активным (ротация)</button>' +
+    '  <input id="new-parent-email" type="text" spellcheck="false" placeholder="e-mail родительской iCloud-учётки" />' +
+    '  <input id="new-parent-profile" type="text" inputmode="numeric" spellcheck="false" placeholder="ID профиля Dolphin Anty с открытым iCloud" />' +
+    '  <button id="add-parent">Добавить</button>' +
     '</div>' +
-    '<div class="table-scroll"><table><tr><th>родитель</th><th>статус</th><th>алиасов в базе</th><th>лимит</th></tr>' +
-    rows.map((p) => '<tr><td>' + p.email + '</td><td>' + p.status + '</td><td>' + p.aliases + '</td><td>' + p.alias_limit + '</td></tr>').join('') +
-    '</table></div>';
-  $('#sync-aliases').onclick = importAliases;
-  $('#set-parent-btn').onclick = async () => {
-    const e = $('#set-parent').value.trim();
-    if (!e) return;
-    const rr = await callApi('POST', '/parent', { email: e });
-    const msg = rr.status === 200 ? 'Активный родитель: ' + rr.body.activeParent : 'Ошибка: ' + (rr.body && rr.body.error);
-    alert(msg);
-    loadParents();
-    refresh();
+    '<div id="add-parent-result" class="hint" role="status">Каждый родитель — отдельный профиль Dolphin. Сервис держит профили всех родителей открытыми и сам подключается к ним.</div>' +
+    '<div id="parents-list"></div>';
+  $('#add-parent').onclick = addParent;
+  for (const id of ['#new-parent-email', '#new-parent-profile']) {
+    $(id).addEventListener('keydown', e => { if (e.key === 'Enter') addParent(); });
+  }
+  renderedSignature = '';
+  await refreshParents();
+}
+
+// ---------- Алиасы ----------
+
+const ALIASES_PER_PAGE = 20;
+let aliasState = { parent: '', q: '', page: 1 };
+let aliasSearchTimer = null;
+
+async function renderAliasTable() {
+  const offset = (aliasState.page - 1) * ALIASES_PER_PAGE;
+  const query = '?limit=' + ALIASES_PER_PAGE + '&offset=' + offset +
+    (aliasState.parent ? '&parent=' + encodeURIComponent(aliasState.parent) : '') +
+    (aliasState.q ? '&q=' + encodeURIComponent(aliasState.q) : '');
+  const r = await callApi('GET', '/aliases' + query);
+  const container = $('#alias-table');
+  if (!container) return;
+  if (r.status !== 200 || !r.body || !Array.isArray(r.body.rows)) {
+    container.innerHTML = '<div class="hint">' + escapeHtml(apiError(r, 'Не удалось загрузить алиасы')) + '</div>';
+    return;
+  }
+  const { total, rows } = r.body;
+  const pages = Math.max(1, Math.ceil(total / ALIASES_PER_PAGE));
+  if (aliasState.page > pages) {
+    aliasState.page = pages;
+    return renderAliasTable();
+  }
+  const page = aliasState.page;
+  const pager = pages > 1
+    ? '<div class="pager">' +
+      '<button class="secondary" data-page="1"' + (page === 1 ? ' disabled' : '') + ' title="Первая страница">«</button>' +
+      '<button class="secondary" data-page="' + (page - 1) + '"' + (page === 1 ? ' disabled' : '') + '>‹ Назад</button>' +
+      '<span class="pager-info">Стр. ' + page + ' из ' + pages + ' · ' + (offset + 1) + '–' + (offset + rows.length) + ' из ' + total + '</span>' +
+      '<button class="secondary" data-page="' + (page + 1) + '"' + (page === pages ? ' disabled' : '') + '>Вперёд ›</button>' +
+      '<button class="secondary" data-page="' + pages + '"' + (page === pages ? ' disabled' : '') + ' title="Последняя страница">»</button>' +
+      '</div>'
+    : '';
+  container.innerHTML = (total
+    ? '<div class="table-scroll"><table><tr><th>алиас</th><th>метка</th><th>родитель</th><th>создан</th></tr>' +
+      rows.map(a => '<tr><td>' + escapeHtml(a.email) + '</td><td>' + escapeHtml(a.name) + '</td><td>' + escapeHtml(a.parent) + '</td><td>' + escapeHtml(a.created_at) + '</td></tr>').join('') +
+      '</table></div>'
+    : '<div class="hint">' + (aliasState.q || aliasState.parent ? 'Ничего не найдено.' : 'Алиасов пока нет: они загрузятся из iCloud, когда подключатся профили родителей.') + '</div>') + pager;
+  container.querySelectorAll('.pager button').forEach(btn => {
+    btn.onclick = () => { aliasState.page = Number(btn.dataset.page); renderAliasTable(); };
+  });
+}
+
+async function loadAliases() {
+  const r = await callApi('GET', '/parents');
+  const list = Array.isArray(r.body) ? r.body : parents;
+  $('#tab-content').innerHTML =
+    '<div class="row">' +
+    '<select id="alias-parent" aria-label="Родитель"><option value="">Все родители</option>' +
+    list.map(p => '<option value="' + p.id + '"' + (String(p.id) === aliasState.parent ? ' selected' : '') + '>' +
+      escapeHtml(p.email) + ' · ' + p.aliases + (p.archived ? ' (отключён)' : '') + '</option>').join('') +
+    '</select>' +
+    '<input id="alias-q" type="text" spellcheck="false" placeholder="поиск по адресу или метке" value="' + escapeHtml(aliasState.q) + '" />' +
+    '</div>' +
+    '<div id="alias-table"></div>';
+  $('#alias-parent').onchange = () => {
+    aliasState.parent = $('#alias-parent').value;
+    aliasState.page = 1;
+    renderAliasTable();
   };
+  $('#alias-q').oninput = () => {
+    clearTimeout(aliasSearchTimer);
+    aliasSearchTimer = setTimeout(() => {
+      aliasState.q = $('#alias-q').value.trim();
+      aliasState.page = 1;
+      renderAliasTable();
+    }, 300);
+  };
+  await renderAliasTable();
+}
+
+// ---------- Лог ----------
+
+let logLines = [];
+let logFilter = '';
+const logMatches = line => !logFilter || line.toLowerCase().includes(logFilter);
+
+function renderLog() {
+  const el = $('#log-pre');
+  if (!el) return;
+  el.textContent = logLines.filter(logMatches).join('\n');
+  scrollLog();
 }
 
 async function loadLog() {
-  const lines = await window.api.invoke('svc:logs');
-  $('#tab-content').innerHTML = '<pre id="log-pre"></pre>';
-  $('#log-pre').textContent = lines.join('\n');
-  scrollLog();
+  logLines = await window.api.invoke('svc:logs');
+  $('#tab-content').innerHTML =
+    '<div class="row"><input id="log-filter" type="text" spellcheck="false" placeholder="фильтр: e-mail родителя, [gRPC] или любой текст" value="' + escapeHtml(logFilter) + '" /></div>' +
+    '<pre id="log-pre"></pre>';
+  $('#log-filter').oninput = () => {
+    logFilter = $('#log-filter').value.trim().toLowerCase();
+    renderLog();
+  };
+  renderLog();
 }
 
 function appendLog(line) {
   if (currentTab !== 'log') return;
+  logLines.push(line);
+  if (logLines.length > 2000) logLines.splice(0, 1000);
   const el = $('#log-pre');
-  if (!el) return;
-  el.textContent += '\n' + line;
+  if (!el || !logMatches(line)) return;
+  el.textContent += (el.textContent ? '\n' : '') + line;
   scrollLog();
 }
 
@@ -285,6 +487,8 @@ function scrollLog() {
   const el = $('#log-pre');
   if (el) el.scrollTop = el.scrollHeight;
 }
+
+// ---------- Подключение ----------
 
 function copyBlock(text) {
   return '<div class="row"><div class="result cmd">' + escapeHtml(text) + '</div>' +
@@ -337,22 +541,106 @@ async function loadConnection() {
   };
 }
 
+// ---------- Шапка, код, обновления ----------
+
+async function refresh() {
+  try {
+    const h = await callApi('GET', '/health');
+    if (h.status !== 200 || typeof h.body !== 'object') throw new Error('bad health');
+    const b = h.body;
+    const ps = b.parents || {};
+    setChip('#chip-svc', true, 'сервис: работает');
+    setChip('#chip-parent', ps.working > 0,
+      'родители: ' + ps.working + (ps.registering ? ' · регистрируют ' + ps.registering : '') + (ps.full ? ' · заполнено ' + ps.full : ''),
+      ps.archived ? 'Отключённых: ' + ps.archived : '');
+    setChip('#chip-cdp', ps.withProfile > 0 && ps.connected === ps.withProfile, 'браузеры: ' + ps.connected + '/' + ps.withProfile,
+      'Подключённые профили родителей в работе (из тех, у кого задан профиль).');
+    setChip('#chip-aliases', true, 'алиасов: ' + b.aliases);
+    const next = b.generator && b.generator.next;
+    setChip('#chip-generator', ps.registering > 0,
+      !ps.registering ? 'регистрация: выключена у всех' : next ? 'регистрация: ближайшее ' + whenOf(next.at) + ' · ' + next.parent : 'регистрация: ждёт',
+      'Время по Новосибирску. Расписание и лимит 5 в час — у каждого родителя свои.');
+  } catch {
+    setChip('#chip-svc', false, 'сервис: не запущен');
+    setChip('#chip-parent', false, 'родители: —');
+    setChip('#chip-cdp', false, 'браузеры: —');
+    setChip('#chip-aliases', false, 'алиасов: —');
+    setChip('#chip-generator', false, 'регистрация: —');
+  }
+  const st = await window.api.invoke('svc:state');
+  $('#btn-start').disabled = st.running;
+  $('#btn-stop').disabled = !st.running;
+  const grpc = await window.api.invoke('grpc:state');
+  setChip('#chip-grpc', grpc.running, 'gRPC: ' + (grpc.running ? 'работает' : 'не запущен'));
+  $('#btn-grpc-start').disabled = grpc.running;
+  $('#btn-grpc-stop').disabled = !grpc.running;
+  if (currentTab === 'parents') await refreshParents();
+}
+
+const UPDATE_TEXT = {
+  off: () => 'dev-сборка',
+  'no-token': () => 'обновления: нет update.token в config.json',
+  checking: () => 'проверка обновлений…',
+  latest: () => 'актуальная',
+  downloading: (u) => 'скачивается ' + u.next + (u.percent != null ? ' (' + u.percent + '%)' : ''),
+  ready: (u) => 'готово обновление ' + u.next,
+  error: () => 'ошибка обновления',
+};
+
+function renderUpdate(u) {
+  const chip = $('#chip-update');
+  chip.textContent = 'версия ' + (u.version || '—') + ' · ' + (UPDATE_TEXT[u.status] || UPDATE_TEXT.off)(u);
+  chip.className = 'chip' + (u.status === 'latest' || u.status === 'ready' ? ' ok' : u.status === 'error' || u.status === 'no-token' ? ' bad' : '');
+  chip.title = u.error || '';
+  const button = $('#btn-update');
+  button.hidden = u.status !== 'ready';
+  button.textContent = 'Обновить до ' + u.next;
+}
+
+async function installUpdate() {
+  if (!confirm('Остановить сервисы, установить обновление и перезапустить приложение? Работавшие сервисы запустятся снова.')) return;
+  $('#btn-update').disabled = true;
+  const r = await window.api.invoke('update:install');
+  if (!r.ok) {
+    alert(r.error);
+    $('#btn-update').disabled = false;
+  }
+}
+
+async function requestCode() {
+  const email = $('#code-email').value.trim();
+  const out = $('#code-result');
+  if (!email) {
+    out.textContent = 'Введите e-mail алиаса.';
+    out.className = 'result err';
+    return;
+  }
+  out.className = 'result busy';
+  out.textContent = 'Запрашиваю… (сервис откроет почту родителя алиаса в его профиле)';
+  const r = await callApi('GET', '/code?format=json&email=' + encodeURIComponent(email));
+  if (r.status === 200 && r.body && r.body.code) {
+    out.innerHTML = escapeHtml(r.body.email + ':' + r.body.code) + '<span class="result-meta">родитель ' + escapeHtml(r.body.parent) + (r.body.subject ? ' · «' + escapeHtml(r.body.subject) + '»' : '') + '</span>';
+    out.className = 'result ok';
+  } else {
+    out.textContent = apiError(r, 'Код не получен');
+    out.className = 'result err';
+  }
+}
+
 async function loadTab() {
-  if (currentTab === 'aliases') await loadAliases();
-  else if (currentTab === 'parents') await loadParents();
+  if (currentTab === 'parents') await loadParents();
+  else if (currentTab === 'aliases') await loadAliases();
   else if (currentTab === 'connection') await loadConnection();
   else await loadLog();
 }
 
+function switchTab(name) {
+  currentTab = name;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  loadTab();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-  $('#btn-dolphin-connect').onclick = () => connectDolphin();
-  $('#btn-dolphin-restart').onclick = () => connectDolphin(true);
-  $('#dolphin-profile-id').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !$('#btn-dolphin-connect').disabled) connectDolphin();
-  });
-  window.api.invoke('dolphin:settings').then((settings) => {
-    $('#dolphin-profile-id').value = settings.profileId;
-  }).catch((e) => { $('#dolphin-result').textContent = e.message; });
   $('#btn-start').onclick = async () => {
     const r = await window.api.invoke('svc:start');
     if (!r.ok) alert(r.error);
@@ -378,18 +666,30 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#code-email').addEventListener('keydown', (e) => { if (e.key === 'Enter') requestCode(); });
 
   document.querySelectorAll('.tab').forEach((btn) => {
-    btn.onclick = () => {
-      document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentTab = btn.dataset.tab;
-      loadTab();
-    };
+    btn.onclick = () => switchTab(btn.dataset.tab);
   });
 
-  window.api.on('dolphin-status', (text) => {
-    const out = $('#dolphin-result');
-    if (out.classList.contains('busy')) out.textContent = text;
+  // Действия в строках родителей: таблица перерисовывается, поэтому обработчики — на контейнере.
+  const content = $('#tab-content');
+  content.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-action]');
+    if (!button || currentTab !== 'parents') return;
+    const holder = button.closest('[data-id], [data-details]');
+    const id = Number(holder && (holder.dataset.id || holder.dataset.details));
+    if (id) parentAction(id, button.dataset.action, button);
   });
+  content.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-toggle="generator"]')) return;
+    const id = Number(e.target.closest('[data-id]').dataset.id);
+    toggleGenerator(id, e.target);
+  });
+  content.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.matches('[data-input]')) return;
+    const actions = { profile: 'save-profile', 'imap-password': 'save-imap', 'imap-proxy': 'save-imap', prefix: 'save-prefix', 'alias-name': 'create' };
+    const button = e.target.closest('.field')?.querySelector('[data-action="' + actions[e.target.dataset.input] + '"]');
+    if (button && !button.disabled) button.click();
+  });
+
   window.api.on('svc-log', appendLog);
   window.api.on('svc-state', () => refresh());
   window.api.on('grpc-state', () => {
@@ -402,5 +702,4 @@ document.addEventListener('DOMContentLoaded', () => {
   refresh();
   loadTab();
   setInterval(refresh, 5000);
-  if (currentTab === 'log') setInterval(scrollLog, 3000);
 });

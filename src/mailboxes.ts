@@ -1,6 +1,8 @@
+import { renameSync, rmSync, writeFileSync } from 'node:fs';
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import type { ImapAccount, ImapConfig, MailCodeConfig, MailKind } from './mailCodeConfig';
 import { kindCode, parseMail, type ParsedMail } from './mailKinds';
+import type { ImapState, ImapStatusEntry } from './imapAccounts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -43,11 +45,20 @@ export class Mailbox {
   private folders: string[] = [];
   private retryAt = 0;
   private lastError = '';
-  // Отказ во входе не повторяем до перезапуска: частые неудачные входы могут заблокировать Apple ID.
+  // Отказ во входе не повторяем, пока не сменится пароль: частые неудачные входы могут заблокировать Apple ID.
   private authError = '';
   private parsed = new Map<string, ParsedMail>();
 
-  constructor(readonly account: ImapAccount, private readonly cfg: ImapConfig, private readonly log: (msg: string) => void) {}
+  constructor(
+    readonly account: ImapAccount,
+    private readonly cfg: ImapConfig,
+    private readonly log: (msg: string) => void,
+    private readonly onState: (state: ImapState, error: string) => void = () => {},
+  ) {}
+
+  get authFailed(): boolean {
+    return !!this.authError;
+  }
 
   async open(): Promise<{ client: ImapFlow; folders: string[] }> {
     if (this.authError) throw new Error(this.authError);
@@ -68,6 +79,7 @@ export class Mailbox {
       auth: { user: user || email, pass: password },
       proxy: proxy || undefined,
       logger: false,
+      connectionTimeout: 30000,
     });
     client.on('error', error => this.log(`IMAP ${email}: ${message(error)}`));
     client.on('close', () => { if (this.client === client) this.client = null; });
@@ -77,15 +89,18 @@ export class Mailbox {
       const junk = (await client.list()).find(box => box.specialUse === '\\Junk');
       this.folders = junk ? ['INBOX', junk.path] : ['INBOX'];
       this.client = client;
+      this.onState('connected', '');
       return client;
     } catch (error) {
       client.close();
       if ((error as { authenticationFailed?: boolean }).authenticationFailed) {
-        this.authError = `IMAP ${email}: вход не принят. Проверьте логин и app-specific пароль в mail-code.json и перезапустите сервис.`;
+        this.authError = `IMAP ${email}: вход не принят. Проверьте app-specific пароль (вкладка «Родители» или mail-code.json).`;
+        this.onState('auth', this.authError);
         throw new Error(this.authError);
       }
       this.lastError = `IMAP ${email}: не удалось подключиться: ${message(error)}`;
       this.retryAt = Date.now() + this.cfg.reconnectDelayMs;
+      this.onState('error', this.lastError);
       throw new Error(this.lastError);
     }
   }
@@ -138,25 +153,97 @@ export class Mailbox {
   }
 }
 
-/** Все ящики родителей. Реестра алиасов в кластере пока нет, поэтому письмо ищется во всех ящиках сразу. */
-export class Mailboxes {
-  readonly boxes: Mailbox[];
-  /** Ящики, которые при последнем поиске прочитались без ошибок: для их алиасов браузерный путь не нужен. */
-  private healthy: string[] = [];
+/** Родитель алиаса по базе основного сервиса; null — алиас неизвестен или база недоступна. */
+export interface AliasOwner {
+  parentOf(alias: string): string | null;
+}
 
-  constructor(private readonly cfg: MailCodeConfig, log: (msg: string) => void) {
-    this.boxes = cfg.imap.accounts.map(account => new Mailbox(account, cfg.imap, log));
+export interface MailboxesOptions {
+  registry?: AliasOwner;
+  /** Куда писать состояние ящиков для окна (imap-status.json); пусто — не писать. */
+  statusFile?: string;
+}
+
+const sameAccount = (a: ImapAccount, b: ImapAccount) => (a.user ?? '') === (b.user ?? '') && a.password === b.password && (a.proxy ?? '') === (b.proxy ?? '');
+
+/**
+ * Ящики родителей. Если основной сервис знает родителя алиаса, письмо ищется только в его ящике;
+ * алиас неизвестен (или у родителя нет своего ящика в списке) — во всех ящиках сразу.
+ */
+export class Mailboxes {
+  private byEmail = new Map<string, Mailbox>();
+  /** Ящики, прочитанные без ошибок при последнем поиске этого алиаса: для них браузерный путь не нужен. */
+  private healthy = new Map<string, string[]>();
+  private status: Record<string, ImapStatusEntry> = {};
+  private statusTimer: NodeJS.Timeout | undefined;
+
+  constructor(private readonly cfg: MailCodeConfig, private readonly log: (msg: string) => void, private readonly options: MailboxesOptions = {}) {
+    for (const account of cfg.imap.accounts) this.add(account);
   }
 
-  healthyEmails(): string[] {
-    return this.healthy;
+  get boxes(): Mailbox[] {
+    return [...this.byEmail.values()];
+  }
+
+  size(): number {
+    return this.byEmail.size;
+  }
+
+  private add(account: ImapAccount): void {
+    const box = new Mailbox(account, this.cfg.imap, this.log, (state, error) => {
+      // Ящик уже заменён (сменился пароль): его состояние больше не показываем.
+      if (this.byEmail.get(account.email) !== box) return;
+      this.status[account.email] = { state, error, at: Date.now() };
+      this.writeStatus();
+    });
+    this.byEmail.set(account.email, box);
+  }
+
+  /**
+   * Новый список аккаунтов из mail-code.json без перезапуска: новые ящики добавляются, удалённые закрываются,
+   * ящик со сменившимся паролем, логином или прокси создаётся заново (в том числе после отказа во входе).
+   */
+  reload(accounts: ImapAccount[]): { added: string[]; changed: string[]; removed: string[] } {
+    const result = { added: [] as string[], changed: [] as string[], removed: [] as string[] };
+    const next = new Map(accounts.map(account => [account.email, account]));
+    for (const [email, box] of [...this.byEmail]) {
+      const account = next.get(email);
+      if (account && sameAccount(account, box.account)) continue;
+      this.byEmail.delete(email);
+      delete this.status[email];
+      void box.close();
+      (account ? result.changed : result.removed).push(email);
+    }
+    for (const account of accounts) {
+      if (this.byEmail.has(account.email)) continue;
+      this.add(account);
+      if (!result.changed.includes(account.email)) result.added.push(account.email);
+    }
+    this.writeStatus();
+    return result;
+  }
+
+  healthyEmails(email: string): string[] {
+    return this.healthy.get(email) ?? [];
+  }
+
+  /** Ящики, в которых искать письмо на алиас. */
+  private targets(email: string): Mailbox[] {
+    const owner = this.options.registry?.parentOf(email);
+    if (owner) {
+      const own = this.boxes.find(box => box.account.email === owner || box.account.user?.toLowerCase() === owner);
+      if (own) return [own];
+    }
+    return this.boxes;
   }
 
   async find(email: string, kind: MailKind, sentAfterMs: number): Promise<FindResult> {
-    if (!this.boxes.length) throw new Error('в mail-code.json не задан ни один IMAP-аккаунт');
-    const settled = await Promise.allSettled(this.boxes.map(async box =>
+    const boxes = this.targets(email);
+    if (!boxes.length) throw new Error('в mail-code.json не задан ни один IMAP-аккаунт');
+    const settled = await Promise.allSettled(boxes.map(async box =>
       (await box.candidates(email, sentAfterMs)).map(candidate => ({ box, candidate }))));
-    this.healthy = this.boxes.filter((_, i) => settled[i].status === 'fulfilled').map(box => box.account.email);
+    if (this.healthy.size >= 1000) this.healthy.clear();
+    this.healthy.set(email, boxes.filter((_, i) => settled[i].status === 'fulfilled').map(box => box.account.email));
     const errors = settled.flatMap(r => r.status === 'rejected' ? [message(r.reason)] : []);
     const newestFirst = settled.flatMap(r => r.status === 'fulfilled' ? r.value : [])
       .sort((a, b) => b.candidate.receivedAt - a.candidate.receivedAt || b.candidate.uid - a.candidate.uid);
@@ -175,13 +262,33 @@ export class Mailboxes {
     return { status: 'none' };
   }
 
-  /** Подключает все ящики при старте, чтобы ошибки входа сразу были видны в логе. */
-  async connectAll(): Promise<string[]> {
-    const settled = await Promise.allSettled(this.boxes.map(box => box.open()));
+  /** Подключает ящики (все или перечисленные), чтобы ошибки входа сразу были видны в логе и в окне. */
+  async connectAll(emails?: string[]): Promise<string[]> {
+    const boxes = emails ? this.boxes.filter(box => emails.includes(box.account.email)) : this.boxes;
+    const settled = await Promise.allSettled(boxes.map(box => box.open()));
     return settled.flatMap(r => r.status === 'rejected' ? [message(r.reason)] : []);
   }
 
+  private writeStatus(): void {
+    const file = this.options.statusFile;
+    if (!file || this.statusTimer) return;
+    this.statusTimer = setTimeout(() => {
+      this.statusTimer = undefined;
+      const temporary = `${file}.${process.pid}.tmp`;
+      try {
+        writeFileSync(temporary, JSON.stringify({ pid: process.pid, updatedAt: Date.now(), accounts: this.status }, null, 2));
+        renameSync(temporary, file);
+      } catch (error) {
+        rmSync(temporary, { force: true });
+        this.log(`не удалось записать ${file}: ${message(error)}`);
+      }
+    }, 200);
+    this.statusTimer.unref();
+  }
+
   async close(): Promise<void> {
+    if (this.statusTimer) clearTimeout(this.statusTimer);
+    if (this.options.statusFile) rmSync(this.options.statusFile, { force: true });
     await Promise.all(this.boxes.map(box => box.close()));
   }
 }

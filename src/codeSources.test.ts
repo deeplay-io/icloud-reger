@@ -43,3 +43,20 @@ test('browser failure keeps NOT_FOUND of a healthy IMAP unless the alias belongs
     /IMAP: вход не принят; браузер: основной сервис недоступен/);
   assert.deepEqual(await lookup(browser(found), imap(new Error('вход не принят'))), found);
 });
+
+test('IMAP without mailboxes yet (passwords are added later in the window) leaves the browser as the only source', async () => {
+  const calls: string[][] = [];
+  const empty: ImapSource = { find: async () => { throw new Error('must not search'); }, healthyEmails: () => [], size: () => 0 };
+  assert.deepEqual(await combineSources(empty, browser(found, calls))('a@icloud.com', 'CODE_KIND_SIGN_UP', 0), found);
+  assert.deepEqual(calls, [[]]);
+  await assert.rejects(combineSources(empty, null)('a@icloud.com', 'CODE_KIND_SIGN_UP', 0), /browser.enabled/);
+});
+
+test('the browser skips the mailboxes found healthy for this very alias', async () => {
+  const asked: string[] = [];
+  const calls: string[][] = [];
+  const source: ImapSource = { find: async () => ({ status: 'none' }), healthyEmails: email => { asked.push(email); return ['p@icloud.com']; } };
+  await combineSources(source, browser({ status: 'none' }, calls))('a@icloud.com', 'CODE_KIND_SIGN_UP', 0);
+  assert.deepEqual(asked, ['a@icloud.com']);
+  assert.deepEqual(calls, [['p@icloud.com']]);
+});
