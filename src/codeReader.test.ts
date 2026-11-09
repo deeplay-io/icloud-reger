@@ -2,6 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pageDateToUtc, parseMailDate, readHeaderFields } from './codeReader';
 
+test('German iCloud interface (Dolphin profile with de-DE)', () => {
+  const header = readHeaderFields([
+    { label: 'Von:', value: 'Sender relay_at_gmail_com_x@icloud.com' },
+    { label: 'Betreff:', value: 'Verify your email' },
+    { label: 'Datum:', value: '9. November 2026 um 7:59:39' },
+    { label: 'An:', value: 'Hide My Email two_words_alias@icloud.com' },
+    { label: 'Kopie:', value: 'copy@icloud.com' },
+  ]);
+  assert.deepEqual(header.recipients, ['two_words_alias@icloud.com', 'copy@icloud.com']);
+  assert.equal(header.subject, 'Verify your email');
+  assert.match(header.from, /relay_at_gmail/);
+  assert.equal(header.date, new Date(2026, 10, 9, 7, 59, 39).getTime());
+  assert.equal(parseMailDate('3. März 2026 um 10:01'), new Date(2026, 2, 3, 10, 1).getTime());
+  assert.equal(parseMailDate('9 November 2026 at 07:59:39'), new Date(2026, 10, 9, 7, 59, 39).getTime());
+});
+
 test('sender is read from От кого / From', () => {
   assert.equal(readHeaderFields([{ label: 'От кого:', value: 'GGPass no-reply@ggpass.example' }]).from, 'GGPass no-reply@ggpass.example');
   assert.equal(readHeaderFields([{ label: 'From:', value: 'GGPass' }]).from, 'GGPass');

@@ -14,13 +14,15 @@ export interface CodeResult {
   subject?: string;
 }
 
+// Начала названий месяцев на языках интерфейса iCloud: русский («9 ноября»), немецкий («9. November»), английский.
+const MONTH_PREFIXES = [['янв', 'jan'], ['фев', 'feb'], ['мар', 'mär', 'mar'], ['апр', 'apr'], ['мая', 'май', 'mai', 'may'], ['июн', 'jun'], ['июл', 'jul'], ['авг', 'aug'], ['сен', 'sep'], ['окт', 'okt', 'oct'], ['ноя', 'nov'], ['дек', 'dez', 'dec']];
+
 export function parseMailDate(value: string): number | null {
   const parsed = Date.parse(value);
   if (Number.isFinite(parsed)) return parsed;
-  const months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
-  const match = value.toLowerCase().match(/(\d{1,2})\s+([а-яё]+)\s+(\d{4})[\s\S]*?(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  const match = value.toLowerCase().match(/(\d{1,2})\.?\s+([a-zа-яёäöü]+)\.?\s+(\d{4})[\s\S]*?(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (!match) return null;
-  const month = months.indexOf(match[2]);
+  const month = MONTH_PREFIXES.findIndex(prefixes => prefixes.includes(match[2].slice(0, 3)));
   if (month < 0) return null;
   const result = new Date(+match[3], month, +match[1], +match[4], +match[5], +(match[6] || 0));
   if (result.getMonth() !== month || result.getDate() !== +match[1] || +match[4] > 23 || +match[5] > 59 || +(match[6] || 0) > 59) return null;
@@ -29,11 +31,12 @@ export function parseMailDate(value: string): number | null {
 
 export function readHeaderFields(rows: { label: string; value: string }[]) {
   const find = (label: RegExp) => rows.filter(row => label.test(row.label.trim())).map(row => row.value).join('\n');
-  const dateText = find(/^(?:Дата|Date)\s*:?$/i);
+  // Подписи полей зависят от языка браузера в профиле: русский, английский, немецкий.
+  const dateText = find(/^(?:Дата|Date|Datum)\s*:?$/i);
   return {
-    recipients: (find(/^(?:Кому|Копия|To|Cc)\s*:?$/i).match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi) ?? []).map(email => email.toLowerCase()),
-    from: find(/^(?:От кого|От|From)\s*:?$/i),
-    subject: find(/^(?:Тема|Subject)\s*:?$/i),
+    recipients: (find(/^(?:Кому|Копия|To|Cc|An|Kopie)\s*:?$/i).match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi) ?? []).map(email => email.toLowerCase()),
+    from: find(/^(?:От кого|От|From|Von)\s*:?$/i),
+    subject: find(/^(?:Тема|Subject|Betreff)\s*:?$/i),
     date: parseMailDate(dateText),
     dateText,
   };
