@@ -1,5 +1,5 @@
 import type { Config } from './config';
-import { Db, ALIAS_MAXIMUM, ALIAS_HOURLY_LIMIT } from './db';
+import { Db, ALIAS_MAXIMUM, ALIAS_HOURLY_LIMIT, ALIAS_WINDOW_MS } from './db';
 import { createAlias } from './aliasCreate';
 
 export type Log = (message: string) => void;
@@ -50,7 +50,10 @@ export class AliasGenerator {
       const now = this.now();
       let next = this.db.generatorNextRun(parent.id);
       if (next === null) {
-        this.db.ensureGeneratorSchedule(parent.id, Math.max(now + this.delay(), this.db.creationAllowedAt(parent.id, now)));
+        // Новая база или новый для неё родитель: создания с другой машины за последний час не видны,
+        // поэтому первое — не раньше чем через час, чтобы не превысить лимит Apple.
+        const unknownHistory = !this.db.hasCreationEvents(parent.id);
+        this.db.ensureGeneratorSchedule(parent.id, Math.max(now + this.delay(), this.db.creationAllowedAt(parent.id, now), unknownHistory ? now + ALIAS_WINDOW_MS : 0));
         next = this.db.generatorNextRun(parent.id)!;
       }
       const allowed = this.db.creationAllowedAt(parent.id, now);

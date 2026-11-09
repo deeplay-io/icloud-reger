@@ -100,6 +100,10 @@ export class Db {
       .all(parentId, now - ALIAS_WINDOW_MS) as { requested_at: number }[]).map(row => row.requested_at);
   }
 
+  hasCreationEvents(parentId: number): boolean {
+    return !!this.d.prepare('SELECT 1 FROM alias_creation_events WHERE parent_id = ? LIMIT 1').get(parentId);
+  }
+
   creationAllowedAt(parentId: number, now = Date.now()): number {
     const attempts = this.creationAttempts(parentId, now);
     return attempts.length < ALIAS_HOURLY_LIMIT ? now : attempts[attempts.length - ALIAS_HOURLY_LIMIT] + ALIAS_WINDOW_MS;

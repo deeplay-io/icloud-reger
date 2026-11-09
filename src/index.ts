@@ -4,6 +4,7 @@ import { Db } from './db';
 import { createApi } from './api';
 import { startAliasGenerator, type AliasGenerator } from './aliasGen';
 import { syncAliases } from './aliasSync';
+import { AliasSyncScheduler } from './aliasSyncScheduler';
 
 function main(): void {
   const configFile = process.env.CONFIG_FILE ?? 'config.json';
@@ -12,6 +13,7 @@ function main(): void {
   const db = new Db(cfg.db.file);
   initializeParent(cfg, db);
   let generator: AliasGenerator | undefined;
+  const aliasSync = new AliasSyncScheduler(db, () => syncAliases(cfg, db), log);
 
   const app = createApi(cfg, db, email => saveParentEmail(configFile, email), prefix => saveGeneratorPrefix(configFile, prefix));
   const server = app.listen(cfg.api.port, cfg.api.host, () => {
@@ -20,11 +22,7 @@ function main(): void {
     const active = db.activeParent();
     log(`активный родитель: ${active?.email ?? 'не выбран'} (лимит ${active?.alias_limit ?? cfg.parent.aliasLimit} алиасов)`);
     log(`CDP: ${cfg.browser.cdpUrl}`);
-    if (active) {
-      void syncAliases(cfg, db)
-        .then(result => log(`Алиасы iCloud: найдено ${result.found}, добавлено ${result.added}, удалено ${result.removed}, в базе ${result.total}`))
-        .catch(error => log(`Загрузка алиасов: ${error.message}`));
-    }
+    aliasSync.start();
   });
   server.on('error', (error: NodeJS.ErrnoException) => {
     log(error.code === 'EADDRINUSE'
@@ -36,6 +34,7 @@ function main(): void {
 
   const stop = (): void => {
     log('остановка');
+    aliasSync.stop();
     generator?.stop();
     db.close();
     process.exit(0);

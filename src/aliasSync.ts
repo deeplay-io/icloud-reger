@@ -2,7 +2,7 @@ import type { Frame } from 'puppeteer-core';
 import type { Config } from './config';
 import type { Db } from './db';
 import { getBrowser } from './browser';
-import { ApiError } from './errors';
+import { AliasBusyError, ApiError } from './errors';
 
 // Hide My Email markup. Button texts follow the browser language, so only classes and names are used.
 export const HME = {
@@ -95,7 +95,7 @@ async function readAliasList(frame: Frame, parentEmail: string, timeout: number,
 
 let busy = false;
 export async function withAliasOperation<T>(operation: () => Promise<T>): Promise<T> {
-  if (busy) throw new ApiError(409, 'Операция с алиасами уже выполняется. Дождитесь завершения.');
+  if (busy) throw new AliasBusyError();
   busy = true;
   try { return await operation(); } finally { busy = false; }
 }

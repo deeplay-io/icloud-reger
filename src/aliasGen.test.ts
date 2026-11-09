@@ -110,6 +110,23 @@ test('generator stops at 750 and resumes independently for a newly selected pare
   } finally { db.close(); }
 });
 
+test('first creation waits an hour when this database has no creation history for the parent', async () => {
+  const db = new Db(':memory:');
+  try {
+    const cfg = structuredClone(DEFAULTS);
+    const now = 100000000;
+    const generator = new AliasGenerator(cfg, db, () => {}, { now: () => now, random: () => 0, create: async () => { throw new Error('must not create'); } });
+    const fresh = db.setActiveParent('fresh@icloud.com', 750);
+    await generator.tick();
+    assert.equal(db.generatorNextRun(fresh.id), now + ALIAS_WINDOW_MS);
+
+    const known = db.setActiveParent('known@icloud.com', 750);
+    db.confirmAliasCreation(db.reserveAliasCreation(known.id, 'earlier@icloud.com', now - 2 * ALIAS_WINDOW_MS), now - 2 * ALIAS_WINDOW_MS);
+    await generator.tick();
+    assert.equal(db.generatorNextRun(known.id), now + cfg.generator.minIntervalMinutes * 60000);
+  } finally { db.close(); }
+});
+
 test('random interval stays within configured bounds', () => {
   assert.equal(randomIntervalMs(8, 16, () => 0), 8 * 60000);
   assert.equal(randomIntervalMs(8, 16, () => 1), 16 * 60000);
