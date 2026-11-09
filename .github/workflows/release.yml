@@ -1,10 +1,12 @@
 # Релиз по тегу: npm version minor && git push --follow-tags
 # Собирает Windows-установщик, проверяет его и выкладывает в Releases, откуда его забирает автообновление.
+# Вручную: Actions → release → Run workflow, в «Use workflow from» выбрать тег.
 name: release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,7 +25,9 @@ jobs:
           cache: npm
 
       - name: Тег совпадает с версией в package.json
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          [ "$want" = "$GITHUB_REF_NAME" ] || { echo "::error::Запуск с $GITHUB_REF_NAME, а версия в package.json — $want: запускайте с тега $want"; exit 1; }
 
       - run: npm ci
 
