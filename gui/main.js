@@ -76,6 +76,59 @@ function nodeRuntime() {
   return { command: fs.existsSync(localNode) ? localNode : 'node', env: {} };
 }
 
+// Антивирус с проверкой защищённых соединений (Kaspersky и т. п.) подменяет сертификат imap.mail.me.com своим,
+// корень которого лежит только в хранилище Windows. Node сервисов (у Electron 31 нет --use-system-ca) ему
+// не доверяет: «self-signed certificate in certificate chain». Выгружаем корни Windows в PEM и отдаём сервисам
+// через NODE_EXTRA_CA_CERTS — к встроенным корням Node они добавляются, а не заменяют их.
+const SYSTEM_CA_SCRIPT = 'Get-ChildItem Cert:\\LocalMachine\\Root, Cert:\\CurrentUser\\Root | Sort-Object Thumbprint -Unique | '
+  + 'ForEach-Object { "-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($_.RawData, \'InsertLineBreaks\') + "`n-----END CERTIFICATE-----" }';
+let systemCa = null;
+
+function systemCaFile() {
+  if (process.platform !== 'win32' || process.env.NODE_EXTRA_CA_CERTS) return Promise.resolve(null);
+  systemCa ??= new Promise((resolve) => {
+    const file = path.join(app.getPath('userData'), 'system-ca.pem');
+    let settled = false;
+    // Без PEM сервисы всё равно запускаются; следующий запуск сервиса попробует выгрузить снова.
+    const failed = (why) => {
+      if (settled) return;
+      settled = true;
+      pushLog('сертификаты Windows не выгружены, сервисы доверяют только встроенным корням Node: ' + why);
+      setImmediate(() => { systemCa = null; });
+      resolve(null);
+    };
+    let proc;
+    try {
+      proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', SYSTEM_CA_SCRIPT], { windowsHide: true });
+    } catch (e) {
+      return failed(e.message);
+    }
+    const timer = setTimeout(() => proc.kill(), 20000);
+    let out = '';
+    let err = '';
+    proc.stdout.on('data', (d) => { out += d; });
+    proc.stderr.on('data', (d) => { err += d; });
+    proc.on('error', (e) => { clearTimeout(timer); failed(e.message); });
+    // 'close', а не 'exit': к нему stdout уже дочитан до конца.
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      const count = (out.match(/-----BEGIN CERTIFICATE-----/g) || []).length;
+      if (code !== 0 || !count) return failed(err.trim().split(/\r?\n/)[0] || 'PowerShell завершился с кодом ' + code);
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, out.replace(/\r\n/g, '\n'), 'utf8');
+      } catch (e) {
+        return failed(e.message);
+      }
+      settled = true;
+      pushLog('сертификаты Windows для сервисов: ' + count + ' корневых → ' + file);
+      resolve(file);
+    });
+  });
+  return systemCa;
+}
+
 function waitExit(proc, ms) {
   return new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve(true);
@@ -90,9 +143,9 @@ function createService({ name, title, logPrefix, script, configFile, configEnv, 
   let starting = false;
   const notify = () => send(name + '-state', !!child);
 
-  function spawnChild(file) {
+  function spawnChild(file, caFile) {
     const runtime = nodeRuntime();
-    const env = Object.assign({}, process.env, runtime.env, extraEnv(), { [configEnv]: file });
+    const env = Object.assign({}, process.env, runtime.env, caFile ? { NODE_EXTRA_CA_CERTS: caFile } : {}, extraEnv(), { [configEnv]: file });
     const proc = spawn(runtime.command, [path.join(appRoot(), 'dist', script)], { cwd: appRoot(), env, windowsHide: true });
     child = proc;
     const output = (d) => String(d).split(/\r?\n/).forEach((line) => line.trim() && pushLog(logPrefix + line));
@@ -127,7 +180,7 @@ function createService({ name, title, logPrefix, script, configFile, configEnv, 
             : e.message)));
           probe.listen(port, host, () => probe.close(resolve));
         });
-        return spawnChild(file);
+        return spawnChild(file, await systemCaFile());
       } catch (e) {
         pushLog(e.message);
         return { ok: false, error: e.message };
