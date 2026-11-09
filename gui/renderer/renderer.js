@@ -175,10 +175,16 @@ async function requestCode() {
 
 async function loadAliases() {
   const [r, naming] = await Promise.all([callApi('GET', '/aliases'), callApi('GET', '/generator/settings')]);
-  const settings = naming.status === 200 ? naming.body : {};
+  const apiUp = naming.status === 200;
+  const settings = apiUp ? naming.body : {};
   aliasRows = Array.isArray(r.body) ? r.body : [];
+  const generatorHint = (enabled) => enabled
+    ? 'Включена: следующее создание — по расписанию в чипе «авто».'
+    : 'Выключена: новые алиасы не создаются; коды и загрузка из iCloud работают.';
   $('#tab-content').innerHTML =
     syncControls() +
+    '<label class="toggle"><input id="generator-enabled" type="checkbox"' + (settings.enabled ? ' checked' : '') + (apiUp ? '' : ' disabled') + ' /> Авторегистрация новых алиасов (до 5 в час)</label>' +
+    '<div id="generator-result" class="hint" role="status">' + (apiUp ? generatorHint(settings.enabled) : 'Запустите сервис, чтобы включить или выключить.') + '</div>' +
     '<label for="alias-name-prefix">Имя для авторегистрации (без номера и @icloud.com)</label>' +
     '<div class="row"><input id="alias-name-prefix" type="text" maxlength="60" placeholder="mybox" value="' + escapeHtml(settings.namePrefix) + '" /><button id="save-alias-prefix" class="secondary">Сохранить имя</button></div>' +
     '<div id="prefix-result" class="hint" role="status">Следующий: ' + escapeHtml(settings.nextName || 'выберите родителя') + '</div>' +
@@ -191,6 +197,20 @@ async function loadAliases() {
     '<div id="alias-table"></div>';
   renderAliasTable();
   $('#sync-aliases').onclick = importAliases;
+  $('#generator-enabled').onchange = async () => {
+    const box = $('#generator-enabled');
+    const out = $('#generator-result');
+    box.disabled = true;
+    try {
+      const result = await callApi('POST', '/generator/enabled', { enabled: box.checked });
+      if (result.status !== 200) throw new Error(result.body?.error || 'Не удалось сохранить.');
+      out.textContent = generatorHint(result.body.enabled);
+      await refresh();
+    } catch (e) {
+      box.checked = !box.checked;
+      out.textContent = e.message;
+    } finally { box.disabled = false; }
+  };
   $('#save-alias-prefix').onclick = async () => {
     const button = $('#save-alias-prefix');
     const out = $('#prefix-result');

@@ -61,6 +61,7 @@ button.secondary:hover:not(:disabled) { background: #262c36; }
 }
 .panel label { font-size: 12px; color: #8b93a1; display: block; margin-bottom: 8px; }
 main > label { display: block; margin: 14px 0 8px; font-size: 12px; color: #8b93a1; }
+main > label.toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #e8ebf0; cursor: pointer; }
 #prefix-result { margin-bottom: 14px; }
 
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

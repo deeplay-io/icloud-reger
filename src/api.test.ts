@@ -5,6 +5,32 @@ import { createApi } from './api';
 import { DEFAULTS } from './config';
 import { Db } from './db';
 
+test('auto-registration toggle applies at once, is persisted and does not fire right after a long pause', async t => {
+  const db = new Db(':memory:');
+  const parent = db.setActiveParent('owner@icloud.com', 750);
+  db.setGeneratorSchedule(parent.id, Date.now() - 24 * 60 * 60 * 1000);
+  const cfg = structuredClone(DEFAULTS);
+  cfg.generator.enabled = false;
+  const saved: boolean[] = [];
+  const server = createApi(cfg, db, () => {}, () => {}, enabled => saved.push(enabled)).listen(0, '127.0.0.1');
+  t.after(() => { server.close(); db.close(); });
+  await new Promise(resolve => server.once('listening', resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const toggle = async (enabled: unknown) => fetch(url + '/generator/enabled', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }),
+  });
+
+  assert.equal((await (await fetch(url + '/generator/settings')).json()).enabled, false);
+  const before = Date.now();
+  assert.equal((await (await toggle(true)).json()).enabled, true);
+  assert.equal(cfg.generator.enabled, true);
+  assert.ok(db.generatorNextRun(parent.id)! >= before + cfg.generator.minIntervalMinutes * 60000);
+  await toggle(false);
+  assert.deepEqual(saved, [true, false]);
+  assert.equal(cfg.generator.enabled, false);
+  assert.equal((await toggle('yes')).status, 400);
+});
+
 test('/mail/messages decides from the database before touching the browser', async t => {
   const db = new Db(':memory:');
   const imapParent = db.setActiveParent('imap@icloud.com', 750);

@@ -6,11 +6,18 @@ import { readAliasMessages, readCode } from './codeReader';
 import { isConnected } from './browser';
 import { syncAliases } from './aliasSync';
 import { createAlias } from './aliasCreate';
+import { randomIntervalMs } from './aliasGen';
 import { validAliasPrefix } from './aliasNames';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export function createApi(cfg: Config, db: Db, persistParent: (email: string) => void = () => {}, persistPrefix: (prefix: string) => void = () => {}): Express {
+export function createApi(
+  cfg: Config,
+  db: Db,
+  persistParent: (email: string) => void = () => {},
+  persistPrefix: (prefix: string) => void = () => {},
+  persistGeneratorEnabled: (enabled: boolean) => void = () => {},
+): Express {
   const app = express();
   app.use(express.json());
   // CORS: локальный сервис, интерфейс ходит сюда с file:// / другого origin
@@ -103,8 +110,25 @@ export function createApi(cfg: Config, db: Db, persistParent: (email: string) =>
   const namingSettings = () => {
     const parent = db.activeParent();
     const namePrefix = cfg.generator.namePrefix || parent?.email.split('@')[0] || '';
-    return { namePrefix, nextName: parent && namePrefix ? db.nextAliasName(parent.id, namePrefix) : null };
+    return { enabled: cfg.generator.enabled, namePrefix, nextName: parent && namePrefix ? db.nextAliasName(parent.id, namePrefix) : null };
   };
+  // Авторегистрацию можно выключить, когда нужны только коды: действует сразу и сохраняется в config.json.
+  app.post('/generator/enabled', (req, res) => {
+    if (typeof req.body?.enabled !== 'boolean') { res.status(400).json({ error: 'enabled: true или false' }); return; }
+    const enabled: boolean = req.body.enabled;
+    try {
+      persistGeneratorEnabled(enabled);
+      const parent = db.activeParent();
+      const now = Date.now();
+      const next = parent ? db.generatorNextRun(parent.id) : null;
+      // После долгой паузы не создаём сразу: следующее создание — через обычный интервал.
+      if (enabled && !cfg.generator.enabled && parent && next !== null && next < now) {
+        db.setGeneratorSchedule(parent.id, Math.max(now + randomIntervalMs(cfg.generator.minIntervalMinutes, cfg.generator.maxIntervalMinutes), db.creationAllowedAt(parent.id, now)));
+      }
+      cfg.generator.enabled = enabled;
+      res.json(namingSettings());
+    } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : String(e) }); }
+  });
   app.get('/generator/settings', (_req, res) => { res.json(namingSettings()); });
   app.post('/generator/settings', (req, res) => {
     const prefix = String(req.body?.namePrefix ?? '').trim();

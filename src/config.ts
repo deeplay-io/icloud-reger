@@ -141,6 +141,10 @@ export function saveGeneratorPrefix(file: string, namePrefix: string): void {
   updateConfig(file, raw => { raw.generator = { ...raw.generator, namePrefix }; });
 }
 
+export function saveGeneratorEnabled(file: string, enabled: boolean): void {
+  updateConfig(file, raw => { raw.generator = { ...raw.generator, enabled }; });
+}
+
 function updateConfig(file: string, update: (raw: any) => void): void {
   const target = path.resolve(file);
   const raw = JSON.parse(readFileSync(target, 'utf8'));

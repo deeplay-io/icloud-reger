@@ -1,4 +1,4 @@
-import { loadConfig, saveParentEmail, saveGeneratorPrefix } from './config';
+import { loadConfig, saveParentEmail, saveGeneratorPrefix, saveGeneratorEnabled } from './config';
 import { initializeParent } from './parent';
 import { Db } from './db';
 import { createApi } from './api';
@@ -15,9 +15,12 @@ function main(): void {
   let generator: AliasGenerator | undefined;
   const aliasSync = new AliasSyncScheduler(db, () => syncAliases(cfg, db), log);
 
-  const app = createApi(cfg, db, email => saveParentEmail(configFile, email), prefix => saveGeneratorPrefix(configFile, prefix));
+  const app = createApi(cfg, db, email => saveParentEmail(configFile, email), prefix => saveGeneratorPrefix(configFile, prefix),
+    enabled => saveGeneratorEnabled(configFile, enabled));
   const server = app.listen(cfg.api.port, cfg.api.host, () => {
-    if (cfg.generator.enabled) generator = startAliasGenerator(cfg, db, log);
+    // Генератор работает всегда, а при generator.enabled = false просто ждёт: переключатель в окне действует без перезапуска.
+    generator = startAliasGenerator(cfg, db, log);
+    log(`авторегистрация: ${cfg.generator.enabled ? 'включена' : 'выключена'}`);
     log(`API запущен: http://${cfg.api.host}:${cfg.api.port}`);
     const active = db.activeParent();
     log(`активный родитель: ${active?.email ?? 'не выбран'} (лимит ${active?.alias_limit ?? cfg.parent.aliasLimit} алиасов)`);
