@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -6,7 +7,6 @@ const net = require('node:net');
 const { connectProfile } = require('./dolphin');
 
 let win = null;
-let child = null;
 const logBuffer = [];
 
 // dev: корень проекта; packaged: resources/app (asar: false)
@@ -14,30 +14,35 @@ function appRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.join(__dirname, '..');
 }
 
-function configPath() {
-  if (!app.isPackaged) {
-    const p = path.join(appRoot(), 'config.json');
-    if (!fs.existsSync(p)) {
-      fs.copyFileSync(path.join(appRoot(), 'config.example.json'), p);
-    }
-    return p;
-  }
-  const dir = app.getPath('userData');
+// dev: файл в корне проекта; packaged: в userData, чтобы обновление приложения его не затирало
+function userFile(name, example) {
+  const dir = app.isPackaged ? app.getPath('userData') : appRoot();
   fs.mkdirSync(dir, { recursive: true });
-  const p = path.join(dir, 'config.json');
+  const p = path.join(dir, name);
   if (!fs.existsSync(p)) {
-    const example = path.join(appRoot(), 'config.example.json');
-    if (fs.existsSync(example)) fs.copyFileSync(example, p);
+    const source = path.join(appRoot(), example);
+    if (fs.existsSync(source)) fs.copyFileSync(source, p);
   }
   return p;
 }
 
+const configPath = () => userFile('config.json', 'config.example.json');
+const mailCodeConfigPath = () => userFile('mail-code.json', 'mail-code.example.json');
+
+function readConfig(file = configPath()) {
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
 function readApiPort() {
   try {
-    return (JSON.parse(fs.readFileSync(configPath(), 'utf8')).api || {}).port || 8787;
+    return (readConfig().api || {}).port || 8787;
   } catch {
     return 8787;
   }
+}
+
+function send(channel, data) {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, data);
 }
 
 function pushLog(line) {
@@ -45,85 +50,121 @@ function pushLog(line) {
   if (!line) return;
   logBuffer.push(line);
   if (logBuffer.length > 2000) logBuffer.splice(0, 1000);
-  if (win && !win.isDestroyed()) win.webContents.send('svc-log', line);
+  send('svc-log', line);
 }
 
-let startingService = false;
-async function startChild() {
-  if (child || startingService) return { ok: false, error: 'сервис уже запущен или запускается' };
-  startingService = true;
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
-    const port = cfg.api?.port || 8787;
-    const host = cfg.api?.host || '127.0.0.1';
-    await new Promise((resolve, reject) => {
-      const probe = net.createServer();
-      probe.once('error', (e) => reject(new Error(e.code === 'EADDRINUSE'
-        ? `Порт ${host}:${port} занят другим процессом. Остановите другую копию сервиса или измените api.port в config.json.`
-        : e.message)));
-      probe.listen(port, host, () => probe.close(resolve));
+// Установленное приложение запускает сервисы своим же exe в режиме Node: системный Node.js на сервере не нужен,
+// а better-sqlite3 electron-builder собирает как раз под Electron.
+function nodeRuntime() {
+  if (app.isPackaged) return { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } };
+  const localNode = path.join(appRoot(), '.runtime', 'node_modules', 'node-win-x64', 'bin', 'node.exe');
+  return { command: fs.existsSync(localNode) ? localNode : 'node', env: {} };
+}
+
+function waitExit(proc, ms) {
+  return new Promise((resolve) => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return resolve(true);
+    const timer = setTimeout(() => resolve(false), ms);
+    proc.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+}
+
+/** Дочерний процесс сервиса: запуск с проверкой порта, лог в общее окно, остановка с ожиданием выхода. */
+function createService({ name, title, logPrefix, script, configFile, configEnv, address }) {
+  let child = null;
+  let starting = false;
+  const notify = () => send(name + '-state', !!child);
+
+  function spawnChild(file) {
+    const runtime = nodeRuntime();
+    const env = Object.assign({}, process.env, runtime.env, { [configEnv]: file });
+    const proc = spawn(runtime.command, [path.join(appRoot(), 'dist', script)], { cwd: appRoot(), env, windowsHide: true });
+    child = proc;
+    const output = (d) => String(d).split(/\r?\n/).forEach((line) => line.trim() && pushLog(logPrefix + line));
+    proc.stdout.on('data', output);
+    proc.stderr.on('data', output);
+    proc.on('exit', (code) => {
+      pushLog('— ' + title + ' завершился (код ' + code + ') —');
+      if (child === proc) child = null;
+      notify();
     });
-    return spawnChild();
-  } catch (e) {
-    pushLog(e.message);
-    return { ok: false, error: e.message };
-  } finally {
-    startingService = false;
+    proc.on('error', (e) => {
+      pushLog('не удалось запустить ' + title + ': ' + e.message + (app.isPackaged ? '' : ' (установлен ли Node.js 20+ в PATH?)'));
+      if (child === proc) child = null;
+      notify();
+    });
+    pushLog('— ' + title + ' запускается —');
+    return { ok: true };
   }
+
+  return {
+    running: () => !!child,
+    async start() {
+      if (child || starting) return { ok: false, error: title + ' уже запущен или запускается' };
+      starting = true;
+      try {
+        const file = configFile();
+        const { host, port, key } = address(readConfig(file));
+        await new Promise((resolve, reject) => {
+          const probe = net.createServer();
+          probe.once('error', (e) => reject(new Error(e.code === 'EADDRINUSE'
+            ? `Порт ${host}:${port} занят другим процессом. Остановите другую копию сервиса или измените ${key} в ${path.basename(file)}.`
+            : e.message)));
+          probe.listen(port, host, () => probe.close(resolve));
+        });
+        return spawnChild(file);
+      } catch (e) {
+        pushLog(e.message);
+        return { ok: false, error: e.message };
+      } finally {
+        starting = false;
+        notify();
+      }
+    },
+    async stop() {
+      const proc = child;
+      if (!proc) return { ok: false, error: title + ' не запущен' };
+      child = null;
+      try { proc.kill(); } catch { /* ignore */ }
+      pushLog('— ' + title + ' остановлен —');
+      notify();
+      return { ok: await waitExit(proc, 5000) };
+    },
+  };
 }
 
-function spawnChild() {
-  if (child) return { ok: false, error: 'сервис уже запущен' };
-  const root = appRoot();
-  const localNode = path.join(root, '.runtime', 'node_modules', 'node-win-x64', 'bin', 'node.exe');
-  const node = !app.isPackaged && fs.existsSync(localNode) ? localNode : 'node';
-  const args = [path.join(root, 'dist', 'index.js')];
-  const env = Object.assign({}, process.env);
-  env.CONFIG_FILE = configPath();
-  try {
-    child = spawn(node, args, { cwd: root, env, windowsHide: true });
-  } catch (e) {
-    child = null;
-    return { ok: false, error: String(e.message || e) };
-  }
-  child.stdout.on('data', (d) => String(d).split(/\r?\n/).forEach(pushLog));
-  child.stderr.on('data', (d) => String(d).split(/\r?\n/).forEach(pushLog));
-  const spawned = child;
-  child.on('exit', (code) => {
-    pushLog('— сервис завершился (код ' + code + ') —');
-    if (child === spawned) child = null;
-    if (win && !win.isDestroyed()) win.webContents.send('svc-state', !!child);
-  });
-  child.on('error', (e) => {
-    pushLog('не удалось запустить сервис: ' + e.message + ' (установлен ли Node.js 20+ в PATH?)');
-    if (child === spawned) child = null;
-    if (win && !win.isDestroyed()) win.webContents.send('svc-state', !!child);
-  });
-  pushLog('— сервис запускается —');
-  return { ok: true };
-}
+const services = {
+  svc: createService({
+    name: 'svc',
+    title: 'сервис',
+    logPrefix: '',
+    script: 'index.js',
+    configFile: configPath,
+    configEnv: 'CONFIG_FILE',
+    address: (cfg) => ({ host: cfg.api?.host || '127.0.0.1', port: cfg.api?.port || 8787, key: 'api.port' }),
+  }),
+  grpc: createService({
+    name: 'grpc',
+    title: 'gRPC-сервис',
+    logPrefix: '[gRPC] ',
+    script: 'mailCodeMain.js',
+    configFile: mailCodeConfigPath,
+    configEnv: 'MAIL_CODE_CONFIG',
+    address: (cfg) => ({ host: cfg.grpc?.host || '0.0.0.0', port: cfg.grpc?.port || 50051, key: 'grpc.port' }),
+  }),
+};
 
-function stopChild() {
-  if (!child) return { ok: false, error: 'сервис не запущен' };
-  try { child.kill(); } catch { /* ignore */ }
-  child = null;
-  pushLog('— сервис остановлен —');
-  if (win && !win.isDestroyed()) win.webContents.send('svc-state', false);
-  return { ok: true };
+for (const [name, service] of Object.entries(services)) {
+  ipcMain.handle(name + ':start', () => service.start());
+  ipcMain.handle(name + ':stop', () => service.stop());
+  ipcMain.handle(name + ':state', () => ({ running: service.running() }));
 }
-
-ipcMain.handle('svc:start', async () => {
-  const r = await startChild();
-  if (win && !win.isDestroyed()) win.webContents.send('svc-state', !!child);
-  return r;
-});
-ipcMain.handle('svc:stop', () => stopChild());
-ipcMain.handle('svc:state', () => ({ running: !!child }));
 ipcMain.handle('svc:logs', () => logBuffer.slice(-500));
 ipcMain.handle('config:path', () => configPath());
 ipcMain.handle('config:open', () => shell.openPath(configPath()));
+ipcMain.handle('mail-config:open', () => shell.openPath(mailCodeConfigPath()));
 ipcMain.handle('dolphin:settings', () => {
-  const cfg = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+  const cfg = readConfig();
   return { profileId: cfg.browser?.dolphinProfileId || '', cdpUrl: cfg.browser?.cdpUrl || '' };
 });
 let connectingDolphin = false;
@@ -134,23 +175,18 @@ ipcMain.handle('dolphin:connect', async (_e, profileId, restart = false) => {
     const cfgFile = configPath();
     const result = await connectProfile(profileId, fetch, {
       restart: restart === true,
-      dolphinPath: JSON.parse(fs.readFileSync(cfgFile, 'utf8')).browser?.dolphinPath,
+      dolphinPath: readConfig(cfgFile).browser?.dolphinPath,
       onStatus: (text) => {
         pushLog('Dolphin Anty: ' + text);
-        if (win && !win.isDestroyed()) win.webContents.send('dolphin-status', text);
+        send('dolphin-status', text);
       },
     });
-    const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    const cfg = readConfig(cfgFile);
     cfg.browser = { ...cfg.browser, dolphinProfileId: result.profileId, cdpUrl: result.cdpUrl };
     fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-    if (child) {
-      const previous = child;
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Не удалось остановить сервис. Перезапустите приложение.')), 5000);
-        previous.once('exit', () => { clearTimeout(timer); resolve(); });
-        previous.kill();
-      });
-      const started = await startChild();
+    if (services.svc.running()) {
+      if (!(await services.svc.stop()).ok) throw new Error('Не удалось остановить сервис. Перезапустите приложение.');
+      const started = await services.svc.start();
       if (!started.ok) throw new Error(started.error);
     }
     pushLog('Dolphin Anty: профиль ' + result.profileId + ', CDP ' + result.cdpUrl);
@@ -178,6 +214,76 @@ ipcMain.handle('api:proxy', async (_e, { method = 'GET', path: p = '/', body } =
   }
 });
 
+// Обновления: релизы приватного репозитория, скачиваются сами, ставятся только по кнопке.
+const UPDATE_FEED = { provider: 'github', owner: 'deeplay-io', repo: 'icloud-reger', private: true };
+const CHECK_EVERY_MS = 60 * 60 * 1000;
+let update = { status: 'off' };
+
+function setUpdate(state) {
+  update = { version: app.getVersion(), ...state };
+  send('update-state', update);
+}
+
+function updateError(e) {
+  const text = String(e?.message || e).split('\n')[0].slice(0, 300);
+  return /\b(401|403|404)\b/.test(text)
+    ? 'GitHub не отдал релизы: проверьте update.token в config.json (доступ на чтение к deeplay-io/icloud-reger, срок действия). ' + text
+    : text;
+}
+
+function setupUpdates() {
+  if (!app.isPackaged) return setUpdate({ status: 'off' });
+  // Токен только на чтение репозитория лежит в config.json на сервере, а не в установщике.
+  let token = '';
+  try { token = readConfig().update?.token || ''; } catch { /* config.json покажет ошибку при запуске сервиса */ }
+  if (!token) return setUpdate({ status: 'no-token' });
+  autoUpdater.setFeedURL({ ...UPDATE_FEED, token });
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.on('checking-for-update', () => setUpdate({ status: 'checking' }));
+  autoUpdater.on('update-not-available', () => setUpdate({ status: 'latest' }));
+  autoUpdater.on('update-available', (info) => setUpdate({ status: 'downloading', next: info.version }));
+  autoUpdater.on('download-progress', (p) => setUpdate({ status: 'downloading', next: update.next, percent: Math.round(p.percent) }));
+  autoUpdater.on('update-downloaded', (info) => setUpdate({ status: 'ready', next: info.version }));
+  autoUpdater.on('error', (e) => {
+    const error = updateError(e);
+    pushLog('обновление: ' + error);
+    setUpdate({ status: 'error', error });
+  });
+  const check = () => { if (update.status !== 'ready') autoUpdater.checkForUpdates().catch(() => { /* придёт в 'error' */ }); };
+  check();
+  setInterval(check, CHECK_EVERY_MS);
+}
+
+// После обновления поднимаем те сервисы, что работали до него.
+const restartFile = () => path.join(app.getPath('userData'), 'restart-services.json');
+
+function restoreServices() {
+  let names = [];
+  try { names = JSON.parse(fs.readFileSync(restartFile(), 'utf8')); } catch { return; }
+  fs.rmSync(restartFile(), { force: true });
+  for (const name of names) if (services[name]) services[name].start();
+}
+
+let installing = false;
+ipcMain.handle('update:state', () => update);
+ipcMain.handle('update:install', async () => {
+  if (update.status !== 'ready') return { ok: false, error: 'обновление ещё не скачано' };
+  if (installing) return { ok: false, error: 'обновление уже устанавливается' };
+  installing = true;
+  const running = Object.keys(services).filter((name) => services[name].running());
+  fs.writeFileSync(restartFile(), JSON.stringify(running), 'utf8');
+  // Работающие сервисы держат открытыми файлы приложения (asar: false), и установщик не сможет их заменить.
+  const stopped = await Promise.all(running.map((name) => services[name].stop()));
+  if (stopped.some((r) => !r.ok)) {
+    installing = false;
+    return { ok: false, error: 'Сервис не остановился за 5 секунд. Закройте приложение и запустите снова.' };
+  }
+  pushLog('— устанавливаю обновление ' + update.next + ' —');
+  autoUpdater.quitAndInstall(true, true);
+  return { ok: true };
+});
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1150,
@@ -198,12 +304,14 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  restoreServices();
+  setupUpdates();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  stopChild();
+  for (const service of Object.values(services)) service.stop();
   if (process.platform !== 'darwin') app.quit();
 });

@@ -38,26 +38,41 @@ Electron-приложение: запуск/стоп сервиса, запро�
 npm run gui                          # соберёт dist/ и откроет окно
 ```
 
-### Сборка Windows-инсталлятора
+### Релизы и автообновление
 
-На машине под Windows:
+Установщик собирает GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) по тегу `v*` и выкладывает в Releases репозитория. Выпустить версию:
 
 ```bash
-npm run dist:win
+npm version minor          # или patch: меняет версию в package.json, делает коммит и тег
+git push --follow-tags
 ```
 
-Результат — `release/ICloud Codes Setup 0.1.0.exe` (NSIS). При первом запуске конфиг создаётся в `%APPDATA%/icloud-codes/config.json` (кнопка «config.json» в окне открывает его в проводнике). Сервисный процесс GUI запускает системным `node` (нужен Node 20+ в PATH).
+Workflow проверяет, что тег совпадает с версией, прогоняет тесты, собирает установщик, проверяет его (better-sqlite3 и gRPC-сервис запускаются в Electron) и публикует `icloud-codes-setup-<версия>.exe` с `latest.yml`.
+
+Локально `npm run dist:win` не запускайте: electron-builder пересоберёт `better-sqlite3` в `node_modules` под Electron, и тесты и сервис на Node 22 перестанут запускаться (вернуть: `npm ci`).
+
+Первая установка на сервер — вручную из Releases. Дальше:
+- Токен для обновлений — fine-grained, владелец `deeplay-io`, только репозиторий `icloud-reger`, право Contents: Read-only. Впишите его в `config.json` как `"update": { "token": "github_pat_…" }` и перезапустите приложение. В установщике и репозитории токена нет.
+- Приложение проверяет обновления при запуске и раз в час, скачивает новую версию само, а ставит только по кнопке «Обновить до …»: останавливает сервисы, ставит обновление, перезапускается и снова запускает те сервисы, что работали. Состояние — в чипе «версия», ошибки (например, просроченный токен) — в подсказке чипа и в логе.
+- Конфиги лежат в `%APPDATA%\ICloud Codes\` (`config.json`, `mail-code.json`; кнопки в окне открывают их) и при обновлении не трогаются.
+- Сервисы в установленном приложении работают на его же exe (`ELECTRON_RUN_AS_NODE`), Node.js на сервере не нужен.
+- gRPC слушает `0.0.0.0:50051`: при первом запуске Windows спросит про доступ к сети. Вместо ответа на запрос создайте правило, пускающее на порт только адреса пилота:
+
+```powershell
+New-NetFirewallRule -DisplayName "ICloud Codes gRPC" -Direction Inbound -Protocol TCP -LocalPort 50051 -RemoteAddress <адреса пилота> -Action Allow
+```
 
 В окне:
-- чипы статуса: сервис / браузер (CDP) / активный родитель / число алиасов (обновление каждые 5 с);
+- чипы статуса: сервис / браузер (CDP) / активный родитель / число алиасов / gRPC / версия (обновление каждые 5 с);
+- запуск и остановка HTTP-сервиса и gRPC-сервиса, кнопки `config.json` и `mail-code.json`;
 - «Запросить код» — поле `***@icloud.com`, результат `почта:код`;
-- вкладки: Алиасы (таблица + ручное добавление), Родители (таблица + ротация), Лог сервиса.
+- вкладки: Алиасы (таблица + ручное добавление), Родители (таблица + ротация), Лог сервиса (строки gRPC с пометкой `[gRPC]`).
 
 ### Структура
 
 ```
 gui/
-  main.js        — Electron main: запуск сервиса (child process), IPC, прокси к API
+  main.js        — Electron main: запуск HTTP- и gRPC-сервиса (child process), автообновление, IPC, прокси к API
   preload.js     — contextBridge (window.api)
   renderer/      — index.html / style.css / renderer.js (тёмная тема, на русском)
 ```
@@ -86,7 +101,7 @@ curl 'http://127.0.0.1:8787/code?email=xyz@icloud.com'
 
 ## gRPC-сервис кодов для пилота регистрации
 
-Отдельный процесс без браузера: читает ящики родителей по IMAP (`imap.mail.me.com`) и отдаёт коды из писем GGPass по контракту [proto/deeplay/mail_code/v1/mail_code.proto](proto/deeplay/mail_code/v1/mail_code.proto) (`MailCodeService.GetCode`). Запускается на том же Windows-сервере, что авторегистратор; пилот из кластера только обращается к нему за кодами. Порт открыт без TLS и авторизации, поэтому доступ к нему нужно ограничить файрволом.
+Отдельный процесс без браузера: читает ящики родителей по IMAP (`imap.mail.me.com`) и отдаёт коды из писем GGPass по контракту [proto/deeplay/mail_code/v1/mail_code.proto](proto/deeplay/mail_code/v1/mail_code.proto) (`MailCodeService.GetCode`). Запускается на том же Windows-сервере, что авторегистратор, кнопкой «Запустить gRPC» в окне приложения; пилот из кластера только обращается к нему за кодами. Порт открыт без TLS и авторизации, поэтому доступ к нему нужно ограничить файрволом (см. «Релизы и автообновление»). Пока в `mail-code.json` пароль из примера, сервис не запускается.
 
 ```bash
 cp mail-code.example.json mail-code.json   # вписать родителей и их app-specific пароли

@@ -5,7 +5,9 @@
   "description": "Сервис выдачи кодов из писем для пула iCloud-алиасов + Windows GUI",
   "author": "Deeplay",
   "main": "gui/main.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "tsx src/index.ts",
@@ -22,6 +24,7 @@
     "@grpc/proto-loader": "^0.8.1",
     "@grpc/reflection": "^1.0.4",
     "better-sqlite3": "^11.3.0",
+    "electron-updater": "^6.8.11",
     "express": "^4.21.0",
     "grpc-health-check": "^2.1.0",
     "imapflow": "^2.10.0",
@@ -42,16 +45,30 @@
     "appId": "deeplay.icloud-codes",
     "productName": "ICloud Codes",
     "asar": false,
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "gui/**/*",
       "dist/**/*",
+      "proto/**/*",
       "config.example.json",
+      "mail-code.example.json",
       "package.json"
     ],
-    "win": { "target": "nsis" },
+    "win": {
+      "target": "nsis"
+    },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "icloud-codes-setup-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "deeplay-io",
+      "repo": "icloud-reger",
+      "releaseType": "release"
     }
   }
 }

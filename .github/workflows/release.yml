@@ -1,0 +1,59 @@
+# Релиз по тегу: npm version minor && git push --follow-tags
+# Собирает Windows-установщик, проверяет его и выкладывает в Releases, откуда его забирает автообновление.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Тег совпадает с версией в package.json
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - run: npm ci
+
+      # До electron-builder: он пересобирает better-sqlite3 под Electron, и под Node тесты уже не запустятся.
+      - name: Тесты
+        run: npx tsx --test src/*.test.ts gui/*.test.js
+
+      - run: npm run build
+      - run: npx electron-builder --win --publish never
+
+      - name: Проверка установщика
+        run: |
+          exe="release/win-unpacked/ICloud Codes.exe"
+          app="release/win-unpacked/resources/app"
+          test -f release/latest.yml
+          test -f "$app/proto/deeplay/mail_code/v1/mail_code.proto"
+          # Сервисы в установленном приложении работают на его exe в режиме Node.
+          ELECTRON_RUN_AS_NODE=1 "$exe" -e "
+            const Database = require('./$app/node_modules/better-sqlite3');
+            new Database(':memory:').prepare('select 1').get();
+            console.log('better-sqlite3 ok');"
+          echo '{"grpc":{"host":"127.0.0.1","port":50099},"imap":{"accounts":[]}}' > "$RUNNER_TEMP/mail-code.json"
+          MAIL_CODE_CONFIG="$RUNNER_TEMP/mail-code.json" ELECTRON_RUN_AS_NODE=1 timeout 15 "$exe" "$app/dist/mailCodeMain.js" > grpc.log 2>&1 || true
+          cat grpc.log
+          grep -q 'MailCodeService' grpc.log
+
+      - name: Релиз
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create "$GITHUB_REF_NAME"
+          release/latest.yml release/icloud-codes-setup-*.exe release/icloud-codes-setup-*.exe.blockmap
+          --title "$GITHUB_REF_NAME" --generate-notes

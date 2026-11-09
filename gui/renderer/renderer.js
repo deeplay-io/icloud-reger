@@ -117,6 +117,40 @@ async function refresh() {
   const st = await window.api.invoke('svc:state');
   $('#btn-start').disabled = st.running;
   $('#btn-stop').disabled = !st.running;
+  const grpc = await window.api.invoke('grpc:state');
+  setChip('#chip-grpc', grpc.running, 'gRPC: ' + (grpc.running ? 'работает' : 'не запущен'));
+  $('#btn-grpc-start').disabled = grpc.running;
+  $('#btn-grpc-stop').disabled = !grpc.running;
+}
+
+const UPDATE_TEXT = {
+  off: () => 'dev-сборка',
+  'no-token': () => 'обновления: нет update.token в config.json',
+  checking: () => 'проверка обновлений…',
+  latest: () => 'актуальная',
+  downloading: (u) => 'скачивается ' + u.next + (u.percent != null ? ' (' + u.percent + '%)' : ''),
+  ready: (u) => 'готово обновление ' + u.next,
+  error: () => 'ошибка обновления',
+};
+
+function renderUpdate(u) {
+  const chip = $('#chip-update');
+  chip.textContent = 'версия ' + (u.version || '—') + ' · ' + (UPDATE_TEXT[u.status] || UPDATE_TEXT.off)(u);
+  chip.className = 'chip' + (u.status === 'latest' || u.status === 'ready' ? ' ok' : u.status === 'error' || u.status === 'no-token' ? ' bad' : '');
+  chip.title = u.error || '';
+  const button = $('#btn-update');
+  button.hidden = u.status !== 'ready';
+  button.textContent = 'Обновить до ' + u.next;
+}
+
+async function installUpdate() {
+  if (!confirm('Остановить сервисы, установить обновление и перезапустить приложение? Работавшие сервисы запустятся снова.')) return;
+  $('#btn-update').disabled = true;
+  const r = await window.api.invoke('update:install');
+  if (!r.ok) {
+    alert(r.error);
+    $('#btn-update').disabled = false;
+  }
 }
 
 async function requestCode() {
@@ -257,6 +291,17 @@ document.addEventListener('DOMContentLoaded', () => {
     refresh();
   };
   $('#btn-config').onclick = () => window.api.invoke('config:open');
+  $('#btn-grpc-start').onclick = async () => {
+    const r = await window.api.invoke('grpc:start');
+    if (!r.ok) alert(r.error);
+    refresh();
+  };
+  $('#btn-grpc-stop').onclick = async () => {
+    await window.api.invoke('grpc:stop');
+    refresh();
+  };
+  $('#btn-mail-config').onclick = () => window.api.invoke('mail-config:open');
+  $('#btn-update').onclick = installUpdate;
   $('#btn-code').onclick = requestCode;
   $('#code-email').addEventListener('keydown', (e) => { if (e.key === 'Enter') requestCode(); });
 
@@ -275,6 +320,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   window.api.on('svc-log', appendLog);
   window.api.on('svc-state', () => refresh());
+  window.api.on('grpc-state', () => refresh());
+  window.api.on('update-state', renderUpdate);
+  window.api.invoke('update:state').then(renderUpdate);
 
   refresh();
   loadTab();

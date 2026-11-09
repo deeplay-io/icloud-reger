@@ -50,6 +50,9 @@ export interface MailCodeConfig {
   kinds: Record<MailKind, MailKindRule>;
 }
 
+/** Пароль-заглушка из mail-code.example.json. */
+const EXAMPLE_PASSWORD = 'xxxx-xxxx-xxxx-xxxx';
+
 // Правила kinds — черновик до образцов писем GGPass: тему и отправителя уточнить по реальным письмам.
 const SIX_DIGITS: CodePattern[] = [{ name: 'code-6', regex: '(?:code|код)[^0-9]{0,40}(\\d{6})(?!\\d)' }];
 
@@ -72,6 +75,8 @@ export function loadMailCodeConfig(file = process.env.MAIL_CODE_CONFIG ?? 'mail-
   cfg.domains = cfg.domains.map(domain => domain.toLowerCase());
   for (const account of cfg.imap.accounts) {
     if (!account.email || !account.password) throw new Error('imap.accounts: у каждого аккаунта нужны email и password');
+    // Иначе сервис стал бы входить в чужой ящик из примера.
+    if (account.password === EXAMPLE_PASSWORD) throw new Error(`imap.accounts: у ${account.email} пароль из примера — впишите родителей и их app-specific пароли в ${p}`);
     account.email = account.email.toLowerCase();
   }
   if (!Number.isInteger(cfg.grpc.port) || cfg.grpc.maxWaitSeconds < 0 || cfg.grpc.pollIntervalMs < 100) {
