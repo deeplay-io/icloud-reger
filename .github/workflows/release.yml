@@ -23,43 +23,53 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Electron, NSIS и winCodeSign качаются с GitHub при каждой сборке; кэш убирает лишние загрузки.
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/AppData/Local/electron/Cache
-            ~/AppData/Local/electron-builder/Cache
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Тег совпадает с версией в package.json
         run: |
           want="v$(node -p "require('./package.json').version")"
           [ "$want" = "$GITHUB_REF_NAME" ] || { echo "::error::Запуск с $GITHUB_REF_NAME, а версия в package.json — $want: запускайте с тега $want"; exit 1; }
 
-      - run: npm ci
+      # Прямые ссылки github.com/…/releases/download то и дело отвечают 504, а через API GitHub те же файлы
+      # отдаются. Electron, готовые сборки better-sqlite3 и NSIS качаем через API и раздаём с 127.0.0.1:8099
+      # (.github/serve-binaries.js); контрольные суммы сверяют сами electron, prebuild-install и electron-builder.
+      # Версии NSIS — те, что запрашивает electron-builder 24.13; после его обновления сборка упадёт с 404 на новом имени.
+      - name: Файлы с GitHub через API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="$RUNNER_TEMP/gh-bin"
+          mkdir -p "$dir"
+          locked() { node -p "require('./package-lock.json').packages['node_modules/$1'].version"; }
+          electron=$(locked electron)
+          sqlite=$(locked better-sqlite3)
+          gh release download "v$electron" --repo electron/electron --pattern "electron-v$electron-win32-x64.zip" --dir "$dir"
+          gh release download "v$sqlite" --repo WiseLibs/better-sqlite3 --pattern "better-sqlite3-v$sqlite-*-win32-x64.tar.gz" --dir "$dir"
+          for name in nsis-3.0.4.1 nsis-resources-3.4.1; do
+            gh release download "$name" --repo electron-userland/electron-builder-binaries --pattern "$name.7z" --dir "$dir"
+          done
+          ls "$dir"
+          {
+            echo "BINARIES_DIR=$dir"
+            echo "ELECTRON_MIRROR=http://127.0.0.1:8099/"
+            echo "npm_config_better_sqlite3_binary_host=http://127.0.0.1:8099"
+            echo "ELECTRON_BUILDER_BINARIES_DOWNLOAD_OVERRIDE_URL=http://127.0.0.1:8099"
+          } >> "$GITHUB_ENV"
+
+      # Локальная раздача живёт в пределах шага, поэтому запускается в каждом шаге, где нужна.
+      - name: npm ci
+        run: |
+          node .github/serve-binaries.js "$BINARIES_DIR" 8099 &
+          npm ci
 
       # До electron-builder: он пересобирает better-sqlite3 под Electron, и под Node тесты уже не запустятся.
       - name: Тесты
         run: npx tsx --test src/*.test.ts gui/*.test.js
 
       - run: npm run build
-      # Прямые ссылки github.com/…/releases/download у electron-builder-binaries отвечают 504, а через API GitHub
-      # те же архивы отдаются. electron-builder берёт их с локального адреса и сам сверяет контрольные суммы.
-      # Версии — те, что запрашивает electron-builder 24.13; после его обновления сборка упадёт с 404 на новом имени.
-      - name: Архивы NSIS для electron-builder
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/eb-bin"
-          for name in nsis-3.0.4.1 nsis-resources-3.4.1; do
-            gh release download "$name" --repo electron-userland/electron-builder-binaries --pattern "$name.7z" --dir "$RUNNER_TEMP/eb-bin" --clobber
-          done
-          ls -la "$RUNNER_TEMP/eb-bin"
 
       - name: Сборка установщика
         run: |
-          node .github/serve-binaries.js "$RUNNER_TEMP/eb-bin" 8099 &
-          export ELECTRON_BUILDER_BINARIES_DOWNLOAD_OVERRIDE_URL=http://127.0.0.1:8099
+          node .github/serve-binaries.js "$BINARIES_DIR" 8099 &
           for attempt in 1 2 3; do
             npx electron-builder --win --publish never && exit 0
             echo "::warning::electron-builder упал (попытка $attempt из 3)"
