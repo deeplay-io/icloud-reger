@@ -55,3 +55,18 @@ test('errors carry the parent when the main service resolved the alias', async (
   const offline = new BrowserMail(cfg, (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch);
   await assert.rejects(offline.find('a@icloud.com', 'CODE_KIND_SIGN_UP', 0, []), (error: BrowserMailError) => error.parent === '' && /недоступен/.test(error.message));
 });
+
+test('between passes the last failure is repeated instead of looking like "no mail yet"', async () => {
+  let now = 1000000;
+  const browser = new BrowserMail(cfg, fakeFetch([
+    { status: 503, body: { error: 'Профиль родителя p@icloud.com не подключён', parent: 'p@icloud.com' } },
+    { body: { parent: 'p@icloud.com', skipped: false, messages: [] } },
+  ]), () => now);
+  await assert.rejects(browser.find('a@icloud.com', 'CODE_KIND_SIGN_UP', 0, []), /не подключён/);
+  now += 3000;
+  await assert.rejects(browser.find('a@icloud.com', 'CODE_KIND_SIGN_UP', 0, []), (error: BrowserMailError) => error.parent === 'p@icloud.com');
+  now += 15000;
+  assert.deepEqual(await browser.find('a@icloud.com', 'CODE_KIND_SIGN_UP', 0, []), { status: 'none' });
+  now += 3000;
+  assert.deepEqual(await browser.find('a@icloud.com', 'CODE_KIND_SIGN_UP', 0, []), { status: 'later' });
+});

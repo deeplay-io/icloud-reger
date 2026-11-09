@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Db } from './db';
 
-test('alias import is idempotent and mirrors the active iCloud list of the parent', () => {
+test('alias import is idempotent and mirrors the iCloud list of the parent', () => {
   const db = new Db(':memory:');
   try {
-    const first = db.setActiveParent('first@icloud.com', 750);
+    const first = db.addParent('first@icloud.com');
     db.addAlias(first.id, 'existing@icloud.com', 'existing');
     db.addAlias(first.id, 'deleted@icloud.com', 'deleted');
     assert.deepEqual(db.importAliases(first.id, [
@@ -24,9 +24,9 @@ test('alias import is idempotent and mirrors the active iCloud list of the paren
 test('an empty active list removes every local alias of that parent only', () => {
   const db = new Db(':memory:');
   try {
-    const first = db.setActiveParent('first@icloud.com', 750);
+    const first = db.addParent('first@icloud.com');
     db.addAlias(first.id, 'old@icloud.com', 'old');
-    const second = db.setActiveParent('second@icloud.com', 750);
+    const second = db.addParent('second@icloud.com');
     db.addAlias(second.id, 'a@icloud.com', 'a');
     db.addAlias(second.id, 'b@icloud.com', 'b');
     assert.deepEqual(db.importAliases(second.id, []), { added: 0, removed: 2 });
@@ -38,11 +38,12 @@ test('an empty active list removes every local alias of that parent only', () =>
 test('a rejected import neither adds nor removes aliases and never moves them between parents', () => {
   const db = new Db(':memory:');
   try {
-    const first = db.setActiveParent('first@icloud.com', 750);
+    const first = db.addParent('first@icloud.com');
     db.addAlias(first.id, 'existing@icloud.com', 'existing');
-    const second = db.setActiveParent('second@icloud.com', 750);
+    const second = db.addParent('second@icloud.com');
     db.addAlias(second.id, 'kept@icloud.com', 'kept');
-    assert.throws(() => db.importAliases(first.id, [{ email: 'wrong@icloud.com', name: '' }]));
+    assert.throws(() => db.importAliases(999, [{ email: 'wrong@icloud.com', name: '' }]));
+    assert.equal(db.findAlias('wrong@icloud.com'), undefined);
     assert.throws(() => db.importAliases(second.id, [
       { email: 'new@icloud.com', name: '' },
       { email: 'existing@icloud.com', name: '' },

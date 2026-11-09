@@ -10,13 +10,13 @@ function check(name: string, cond: boolean): void {
 }
 
 const db = new Db(':memory:');
-db.setActiveParent('parent1@icloud.com', 750);
-db.addAlias(1, 'rel1@icloud.com', '1');
+const first = db.addParent('parent1@icloud.com', { generatorEnabled: true });
+db.addAlias(first.id, 'rel1@icloud.com', '1');
 check('findAlias case-insensitive', db.findAlias('REL1@ICLOUD.COM')?.name === '1');
-check('countAliases', db.countAliases(1) === 1);
-db.setActiveParent('parent2@icloud.com', 750);
-check('rotation: old parent exhausted', db.parentById(1)?.status === 'exhausted');
-check('rotation: new parent active', db.activeParent()?.email === 'parent2@icloud.com');
+check('countAliases', db.countAliases(first.id) === 1);
+const second = db.addParent('parent2@icloud.com', { generatorEnabled: true });
+check('parents: both in work at once', db.workingParents().map(p => p.id).join() === `${first.id},${second.id}`);
+check('parents: alias filter by parent', db.listAliases({ parentId: second.id }).total === 0 && db.listAliases({ parentId: first.id }).rows[0]?.parent === 'parent1@icloud.com');
 check('seen refs dedupe', (() => {
   db.recordCode('rel1@icloud.com', 'ref1', '123456');
   db.recordCode('rel1@icloud.com', 'ref1', '123456');

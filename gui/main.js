@@ -5,7 +5,6 @@ const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
-const { connectProfile } = require('./dolphin');
 
 let win = null;
 const logBuffer = [];
@@ -36,6 +35,17 @@ const mailCodeConfigPath = () => userFile('mail-code.json', 'mail-code.example.j
 
 function readConfig(file = configPath()) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+// База основного сервиса: gRPC-сервис читает из неё родителя алиаса, чтобы искать письмо только в его ящике.
+function readDbFile() {
+  const file = configPath();
+  try {
+    const db = (readConfig(file).db || {}).file || './data/codes.db';
+    return path.isAbsolute(db) ? db : path.join(path.dirname(file), db);
+  } catch {
+    return path.join(userDir(), 'data', 'codes.db');
+  }
 }
 
 function readApiPort() {
@@ -147,6 +157,8 @@ const services = {
     configFile: configPath,
     configEnv: 'CONFIG_FILE',
     address: (cfg) => ({ host: cfg.api?.host || '127.0.0.1', port: cfg.api?.port || 8787, key: 'api.port' }),
+    // IMAP-пароли родителей, введённые в окне, сервис записывает в mail-code.json для gRPC-сервиса.
+    extraEnv: () => ({ MAIL_CODE_CONFIG: mailCodeConfigPath() }),
   }),
   grpc: createService({
     name: 'grpc',
@@ -156,8 +168,8 @@ const services = {
     configFile: mailCodeConfigPath,
     configEnv: 'MAIL_CODE_CONFIG',
     address: (cfg) => ({ host: cfg.grpc?.host || '0.0.0.0', port: cfg.grpc?.port || 50051, key: 'grpc.port' }),
-    // Запасной путь чтения кодов идёт через браузер HTTP-сервиса этого же окна.
-    extraEnv: () => ({ CODES_API_URL: 'http://127.0.0.1:' + readApiPort() }),
+    // Запасной путь чтения кодов идёт через браузер HTTP-сервиса этого же окна; база — для адресного поиска по ящикам.
+    extraEnv: () => ({ CODES_API_URL: 'http://127.0.0.1:' + readApiPort(), CODES_DB: readDbFile() }),
   }),
 };
 
@@ -191,40 +203,6 @@ ipcMain.handle('net:public-ip', async () => {
     return { ok: true, address: (await res.text()).trim() };
   } catch (e) {
     return { ok: false, error: 'Не удалось узнать внешний IP: ' + (e.message || String(e)) };
-  }
-});
-ipcMain.handle('dolphin:settings', () => {
-  const cfg = readConfig();
-  return { profileId: cfg.browser?.dolphinProfileId || '', cdpUrl: cfg.browser?.cdpUrl || '' };
-});
-let connectingDolphin = false;
-ipcMain.handle('dolphin:connect', async (_e, profileId, restart = false) => {
-  if (connectingDolphin) return { ok: false, error: 'Подключение уже выполняется.' };
-  connectingDolphin = true;
-  try {
-    const cfgFile = configPath();
-    const result = await connectProfile(profileId, fetch, {
-      restart: restart === true,
-      dolphinPath: readConfig(cfgFile).browser?.dolphinPath,
-      onStatus: (text) => {
-        pushLog('Dolphin Anty: ' + text);
-        send('dolphin-status', text);
-      },
-    });
-    const cfg = readConfig(cfgFile);
-    cfg.browser = { ...cfg.browser, dolphinProfileId: result.profileId, cdpUrl: result.cdpUrl };
-    fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-    if (services.svc.running()) {
-      if (!(await services.svc.stop()).ok) throw new Error('Не удалось остановить сервис. Перезапустите приложение.');
-      const started = await services.svc.start();
-      if (!started.ok) throw new Error(started.error);
-    }
-    pushLog('Dolphin Anty: профиль ' + result.profileId + ', CDP ' + result.cdpUrl);
-    return { ok: true, ...result };
-  } catch (e) {
-    return { ok: false, code: e.code, error: 'Не удалось подключить профиль: ' + (e.message || String(e)) };
-  } finally {
-    connectingDolphin = false;
   }
 });
 ipcMain.handle('api:proxy', async (_e, { method = 'GET', path: p = '/', body } = {}) => {

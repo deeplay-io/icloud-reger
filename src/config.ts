@@ -14,9 +14,15 @@ export interface BrowserConfig {
   mailTabHint: string;
   connectTimeoutMs: number;
   actionTimeoutMs: number;
+  /** Путь к «Dolphin Anty.exe», если он установлен не в стандартную папку. */
+  dolphinPath?: string;
+  /** Устаревшее: профиль единственного родителя; при обновлении переезжает в базу. */
+  dolphinProfileId?: string;
 }
 export interface GeneratorConfig {
+  /** Устаревшее: при обновлении переезжает к родителю, который был активным. */
   enabled: boolean;
+  /** Устаревшее: при обновлении переезжает к родителю, который был активным. */
   namePrefix: string;
   minIntervalMinutes: number;
   maxIntervalMinutes: number;
@@ -41,6 +47,7 @@ export interface CodeConfig {
   patterns: CodePattern[];
 }
 export interface ParentConfig {
+  /** Заполняет новую пустую базу; дальше родители ведутся в окне (база). */
   email: string;
   aliasLimit: number;
 }
@@ -113,16 +120,13 @@ export function loadConfig(file = process.env.CONFIG_FILE ?? 'config.json'): Con
     throw new Error(`не найден ${p} — скопируйте config.example.json в config.json и заполните`);
   }
   const raw = JSON.parse(readFileSync(p, 'utf8'));
-  const cfg = merge(DEFAULTS, raw);
+  const cfg = merge(structuredClone(DEFAULTS), raw);
   if (cfg.generator.namePrefix && !validAliasPrefix(cfg.generator.namePrefix)) throw new Error('generator.namePrefix: введите имя без @icloud.com');
   // Относительные пути — относительно папки, где лежит config.json
   // (в пакетированном GUI это папка userData, в dev — корень проекта).
   const baseDir = path.dirname(p);
   if (!path.isAbsolute(cfg.db.file)) cfg.db.file = path.join(baseDir, cfg.db.file);
   if (!path.isAbsolute(cfg.debug.dir)) cfg.debug.dir = path.join(baseDir, cfg.debug.dir);
-  if (!cfg.parent.email) {
-    throw new Error('config: parent.email обязателен — e-mail родительской iCloud-учётки');
-  }
   if (!Number.isFinite(cfg.generator.minIntervalMinutes) || !Number.isFinite(cfg.generator.maxIntervalMinutes)
     || cfg.generator.minIntervalMinutes < 1 || cfg.generator.maxIntervalMinutes < cfg.generator.minIntervalMinutes) {
     throw new Error('generator: укажите интервалы minIntervalMinutes >= 1 и maxIntervalMinutes >= minIntervalMinutes');
@@ -133,21 +137,10 @@ export function loadConfig(file = process.env.CONFIG_FILE ?? 'config.json'): Con
   return cfg;
 }
 
-export function saveParentEmail(file: string, email: string): void {
-  updateConfig(file, raw => { raw.parent = { ...raw.parent, email }; });
-}
-
-export function saveGeneratorPrefix(file: string, namePrefix: string): void {
-  updateConfig(file, raw => { raw.generator = { ...raw.generator, namePrefix }; });
-}
-
-export function saveGeneratorEnabled(file: string, enabled: boolean): void {
-  updateConfig(file, raw => { raw.generator = { ...raw.generator, enabled }; });
-}
-
-function updateConfig(file: string, update: (raw: any) => void): void {
+/** Меняет JSON-файл атомарно (через временный файл), сохраняя остальные поля; нет файла — начинает с {}. */
+export function updateJsonFile(file: string, update: (raw: any) => void): void {
   const target = path.resolve(file);
-  const raw = JSON.parse(readFileSync(target, 'utf8'));
+  const raw = existsSync(target) ? JSON.parse(readFileSync(target, 'utf8')) : {};
   update(raw);
   const temporary = target + '.' + randomUUID() + '.tmp';
   try {

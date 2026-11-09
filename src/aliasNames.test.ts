@@ -14,9 +14,9 @@ test('uses maximum numeric suffix, including legacy email-shaped labels, rather 
 test('sequence is isolated by parent and imported label corrections are reflected locally', () => {
   const db = new Db(':memory:');
   try {
-    const first = db.setActiveParent('first@icloud.com', 750);
+    const first = db.addParent('first@icloud.com');
     db.addAlias(first.id, 'one@icloud.com', 'mybox5');
-    const second = db.setActiveParent('second@icloud.com', 750);
+    const second = db.addParent('second@icloud.com');
     db.addAlias(second.id, 'two@icloud.com', 'mybox2@icloud.com');
     assert.equal(db.nextAliasName(first.id, 'mybox'), 'mybox6');
     assert.equal(db.nextAliasName(second.id, 'mybox'), 'mybox3');

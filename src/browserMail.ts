@@ -25,6 +25,8 @@ const REQUEST_TIMEOUT_MS = 90 * 1000;
 /** Запасной путь: письма из iCloud Mail через браузер основного сервиса (POST /mail/messages). */
 export class BrowserMail {
   private lastPass = new Map<string, number>();
+  /** Ошибка последнего прохода по алиасу: до следующего прохода повторяется, а не превращается в «писем нет». */
+  private lastFailure = new Map<string, BrowserMailError>();
 
   constructor(
     private cfg: MailCodeConfig,
@@ -34,8 +36,26 @@ export class BrowserMail {
 
   async find(email: string, kind: MailKind, sentAfterMs: number, skipParents: string[]): Promise<BrowserFindResult> {
     const last = this.lastPass.get(email);
-    if (last !== undefined && this.now() - last < this.cfg.browser.pollIntervalMs) return { status: 'later' };
+    if (last !== undefined && this.now() - last < this.cfg.browser.pollIntervalMs) {
+      const failure = this.lastFailure.get(email);
+      if (failure) throw failure;
+      return { status: 'later' };
+    }
     this.lastPass.set(email, this.now());
+    try {
+      const result = await this.pass(email, kind, sentAfterMs, skipParents);
+      if (result.status !== 'later') this.lastFailure.delete(email);
+      return result;
+    } catch (error) {
+      if (error instanceof BrowserMailError) {
+        if (this.lastFailure.size >= 1000) this.lastFailure.clear();
+        this.lastFailure.set(email, error);
+      }
+      throw error;
+    }
+  }
+
+  private async pass(email: string, kind: MailKind, sentAfterMs: number, skipParents: string[]): Promise<BrowserFindResult> {
     const url = this.cfg.browser.apiUrl + '/mail/messages';
     // Правило вида без вырезания кода: основной сервис остановится на самом новом подходящем письме.
     const { from, subject, mustContain } = this.cfg.kinds[kind];

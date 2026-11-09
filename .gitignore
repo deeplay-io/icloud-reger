@@ -5,6 +5,7 @@ data/
 debug/
 config.json
 mail-code.json
+imap-status.json
 .runtime/
 .npm-cache/
 .electron-cache/

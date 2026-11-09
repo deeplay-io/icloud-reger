@@ -8,12 +8,38 @@ export const ALIAS_HOURLY_LIMIT = 5;
 export const ALIAS_MAXIMUM = 750;
 export const ALIAS_WINDOW_MS = 60 * 60 * 1000;
 
+/** Пример из config.example.json: такой родитель не настоящий. */
+export const PLACEHOLDER_PARENT = 'parent@icloud.com';
+
 export interface ParentRow {
   id: number;
   email: string;
-  status: 'active' | 'exhausted';
   alias_limit: number;
   created_at: string;
+  /** ID профиля Dolphin Anty или адрес CDP (http://127.0.0.1:9222); пусто — браузер не задан. */
+  profile: string;
+  generator_enabled: number;
+  /** Основа метки для авторегистрации; пусто — начало e-mail родителя. */
+  name_prefix: string;
+  /** Отключён: сервис не держит его профиль, не загружает и не создаёт алиасы. Коды по IMAP читаются. */
+  archived: number;
+}
+
+export interface ParentSettings {
+  profile?: string;
+  generatorEnabled?: boolean;
+  namePrefix?: string;
+  archived?: boolean;
+  aliasLimit?: number;
+}
+
+export interface AliasListRow extends AliasRow {
+  parent: string;
+}
+
+/** Основа метки авторегистрации: своя у родителя, иначе начало его e-mail. */
+export function namePrefixOf(parent: Pick<ParentRow, 'email' | 'name_prefix'>): string {
+  return parent.name_prefix || parent.email.split('@')[0];
 }
 
 export interface AliasRow {
@@ -70,29 +96,74 @@ export class Db {
         next_run_at INTEGER NOT NULL
       );
     `);
+    this.migrate();
   }
 
-  upsertParent(email: string, aliasLimit: number): ParentRow {
-    const e = email.toLowerCase();
-    this.d
-      .prepare(
-        `INSERT INTO parents (email, alias_limit) VALUES (?, ?)
-         ON CONFLICT(email) DO UPDATE SET alias_limit = excluded.alias_limit`,
-      )
-      .run(e, aliasLimit);
-    return this.d.prepare(`SELECT * FROM parents WHERE email = ?`).get(e) as ParentRow;
+  /**
+   * Если база обновлена со схемы с одним активным родителем: id того, кто был активным.
+   * Ему переносятся профиль и настройки авторегистрации из config.json (см. initializeParents).
+   */
+  legacyActiveParentId: number | null = null;
+
+  private migrate(): void {
+    const version = this.d.pragma('user_version', { simple: true }) as number;
+    if (version < 1) {
+      this.d.transaction(() => {
+        const columns = new Set((this.d.prepare('PRAGMA table_info(parents)').all() as { name: string }[]).map(c => c.name));
+        const add = (name: string, definition: string) => { if (!columns.has(name)) this.d.exec(`ALTER TABLE parents ADD COLUMN ${name} ${definition}`); };
+        add('profile', "TEXT NOT NULL DEFAULT ''");
+        add('generator_enabled', 'INTEGER NOT NULL DEFAULT 0');
+        add('name_prefix', "TEXT NOT NULL DEFAULT ''");
+        add('archived', 'INTEGER NOT NULL DEFAULT 0');
+        const active = this.d.prepare(`SELECT id FROM parents WHERE status = 'active' ORDER BY id DESC LIMIT 1`).get() as { id: number } | undefined;
+        this.legacyActiveParentId = active?.id ?? null;
+        // Родитель-заглушка из примера конфига без алиасов — не настоящий: убираем его из работы.
+        this.d.prepare(`UPDATE parents SET archived = 1 WHERE email = ? AND NOT EXISTS (SELECT 1 FROM aliases WHERE parent_id = parents.id)`).run(PLACEHOLDER_PARENT);
+        this.d.pragma('user_version = 1');
+      })();
+    }
   }
 
-  /** Включает родителя и помечает всех прежних активных исчерпанными (ротация). */
-  setActiveParent(email: string, aliasLimit: number): ParentRow {
-    const p = this.upsertParent(email, aliasLimit);
-    this.d.prepare(`UPDATE parents SET status = 'exhausted' WHERE status = 'active' AND id != ?`).run(p.id);
-    this.d.prepare(`UPDATE parents SET status = 'active' WHERE id = ?`).run(p.id);
-    return this.d.prepare(`SELECT * FROM parents WHERE id = ?`).get(p.id) as ParentRow;
+  addParent(email: string, settings: ParentSettings = {}): ParentRow {
+    const e = email.trim().toLowerCase();
+    if (this.parentByEmail(e)) throw new ApiError(409, `Родитель ${e} уже есть в списке.`);
+    const id = Number(this.d.prepare('INSERT INTO parents (email, alias_limit) VALUES (?, ?)').run(e, settings.aliasLimit ?? ALIAS_MAXIMUM).lastInsertRowid);
+    return this.updateParent(id, settings);
   }
 
-  activeParent(): ParentRow | undefined {
-    return (this.d.prepare(`SELECT * FROM parents WHERE status = 'active' ORDER BY id DESC LIMIT 1`).get() as ParentRow) ?? undefined;
+  updateParent(id: number, settings: ParentSettings): ParentRow {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    const set = (column: string, value: unknown) => { sets.push(`${column} = ?`); values.push(value); };
+    if (settings.profile !== undefined) set('profile', settings.profile.trim());
+    if (settings.generatorEnabled !== undefined) set('generator_enabled', settings.generatorEnabled ? 1 : 0);
+    if (settings.namePrefix !== undefined) set('name_prefix', settings.namePrefix.trim());
+    if (settings.archived !== undefined) set('archived', settings.archived ? 1 : 0);
+    if (settings.aliasLimit !== undefined) set('alias_limit', settings.aliasLimit);
+    if (sets.length) this.d.prepare(`UPDATE parents SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+    const parent = this.parentById(id);
+    if (!parent) throw new ApiError(404, 'Родитель не найден.');
+    return parent;
+  }
+
+  /** Удаляет родителя, добавленного по ошибке: без алиасов и без созданий за последний час. */
+  deleteParent(id: number, now = Date.now()): void {
+    this.d.transaction(() => {
+      if (this.countAliases(id) > 0) throw new ApiError(409, 'У родителя есть алиасы: его можно только отключить.');
+      if (this.creationAttempts(id, now).length) throw new ApiError(409, 'У родителя недавно создавались алиасы: удалить можно через час, а пока — отключить.');
+      this.d.prepare('DELETE FROM alias_generator_schedule WHERE parent_id = ?').run(id);
+      this.d.prepare('DELETE FROM alias_creation_events WHERE parent_id = ?').run(id);
+      this.d.prepare('DELETE FROM parents WHERE id = ?').run(id);
+    })();
+  }
+
+  parentByEmail(email: string): ParentRow | undefined {
+    return (this.d.prepare('SELECT * FROM parents WHERE email = ?').get(email.trim().toLowerCase()) as ParentRow) ?? undefined;
+  }
+
+  /** Родители в работе (не отключённые). */
+  workingParents(): ParentRow[] {
+    return this.d.prepare('SELECT * FROM parents WHERE archived = 0 ORDER BY id').all() as ParentRow[];
   }
 
   creationAttempts(parentId: number, now = Date.now()): number[] {
@@ -120,8 +191,8 @@ export class Db {
 
   reserveAliasCreation(parentId: number, email: string, now = Date.now()): number {
     return this.d.transaction(() => {
-      const parent = this.activeParent();
-      if (parent?.id !== parentId) throw new ApiError(409, 'Родитель изменился. Создание отменено.');
+      const parent = this.parentById(parentId);
+      if (!parent || parent.archived) throw new ApiError(409, 'Родитель отключён. Создание отменено.');
       if (this.aliasCapacityUsed(parentId) >= Math.min(ALIAS_MAXIMUM, parent.alias_limit)) {
         throw new ApiError(409, 'Достигнут лимит алиасов родителя, включая неподтверждённые создания. Выполните загрузку из iCloud.');
       }
@@ -166,10 +237,6 @@ export class Db {
     return (this.d.prepare(`SELECT * FROM parents WHERE id = ?`).get(id) as ParentRow) ?? undefined;
   }
 
-  markExhausted(id: number): void {
-    this.d.prepare(`UPDATE parents SET status = 'exhausted' WHERE id = ?`).run(id);
-  }
-
   countAliases(parentId: number): number {
     return (this.d.prepare(`SELECT COUNT(*) AS c FROM aliases WHERE parent_id = ?`).get(parentId) as { c: number }).c;
   }
@@ -190,7 +257,7 @@ export class Db {
    */
   importAliases(parentId: number, aliases: { email: string; name: string }[]): { added: number; removed: number } {
     return this.d.transaction(() => {
-      if (this.activeParent()?.id !== parentId) throw new Error('Родитель изменился во время загрузки. Повторите загрузку.');
+      if (!this.parentById(parentId)) throw new Error('Родитель удалён во время загрузки.');
       let added = 0;
       for (const alias of aliases) {
         const existing = this.findAlias(alias.email);
@@ -229,12 +296,29 @@ export class Db {
     return nextAliasName(rows.map(row => row.name), prefix);
   }
 
-  listAliases(): AliasRow[] {
-    return this.d.prepare(`SELECT * FROM aliases ORDER BY id DESC`).all() as AliasRow[];
+  /** Алиасы с e-mail родителя, новые сверху; parentId и q (часть адреса или метки) сужают выборку. */
+  listAliases(filter: { parentId?: number; q?: string; limit?: number; offset?: number } = {}): { total: number; rows: AliasListRow[] } {
+    const where: string[] = [];
+    const values: unknown[] = [];
+    if (filter.parentId) { where.push('a.parent_id = ?'); values.push(filter.parentId); }
+    const q = filter.q?.trim().toLowerCase();
+    if (q) { where.push("(instr(a.email, ?) > 0 OR instr(lower(a.name), ?) > 0)"); values.push(q, q); }
+    const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const total = (this.d.prepare(`SELECT COUNT(*) AS n FROM aliases a ${clause}`).get(...values) as { n: number }).n;
+    const page = filter.limit ? ' LIMIT ? OFFSET ?' : '';
+    const rows = this.d.prepare(`SELECT a.*, p.email AS parent FROM aliases a JOIN parents p ON p.id = a.parent_id ${clause} ORDER BY a.id DESC${page}`)
+      .all(...values, ...(filter.limit ? [filter.limit, filter.offset ?? 0] : [])) as AliasListRow[];
+    return { total, rows };
   }
 
+  /** Сначала родители в работе, затем отключённые; внутри — в порядке добавления. */
   listParents(): ParentRow[] {
-    return this.d.prepare(`SELECT * FROM parents ORDER BY id DESC`).all() as ParentRow[];
+    return this.d.prepare(`SELECT * FROM parents ORDER BY archived, id`).all() as ParentRow[];
+  }
+
+  aliasCounts(): Map<number, number> {
+    const rows = this.d.prepare('SELECT parent_id, COUNT(*) AS n FROM aliases GROUP BY parent_id').all() as { parent_id: number; n: number }[];
+    return new Map(rows.map(row => [row.parent_id, row.n]));
   }
 
   recordCode(aliasEmail: string, msgRef: string, code: string): void {

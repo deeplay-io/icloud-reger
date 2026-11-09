@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Frame, Page } from 'puppeteer-core';
-import type { Config } from './config';
-import type { Db } from './db';
+import type { Db, ParentRow } from './db';
+import type { Services } from './services';
 import { ApiError } from './errors';
 import { withPage } from './browser';
 import { extractCode } from './patterns';
@@ -137,8 +137,8 @@ async function messageSnapshot(page: Page, expectedSubject: string, bodySelector
   throw new ApiError(503, 'Не удалось дождаться заголовка и текста выбранного письма iCloud. Повторите запрос.');
 }
 
-/** Алиас из базы и его родитель; читать почту можно только у родителя, чей профиль подключён. */
-function aliasParent(db: Db, email: string) {
+/** Алиас из базы и его родитель: почта читается в профиле этого родителя. */
+function aliasParent(db: Db, email: string): ParentRow {
   const alias = db.findAlias(email);
   if (!alias) throw new ApiError(404, `Алиас ${email} не найден в базе: возможно, он удалён или деактивирован в iCloud. Если адрес создан недавно, нажмите «Загрузить из iCloud».`);
   const parent = db.parentById(alias.parent_id);
@@ -154,11 +154,12 @@ const MESSAGE_TIMEOUT_MS = 10000;
  * visit возвращает true, чтобы остановиться. Письмо, которое не удалось прочитать, пропускается;
  * ошибка — только если не прочиталось ни одно. Работает под общей блокировкой операций в браузере.
  */
-async function scanMailbox(cfg: Config, visit: (message: Awaited<ReturnType<typeof messageSnapshot>>, pageOffsetMinutes: number) => boolean | void): Promise<number> {
+async function scanMailbox({ cfg, pool }: Services, parent: ParentRow, visit: (message: Awaited<ReturnType<typeof messageSnapshot>>, pageOffsetMinutes: number) => boolean | void): Promise<number> {
   const sel = cfg.code.selectors;
   const messageItem = sel.messageItem || '.thread-list-item[role="treeitem"]';
   const body = sel.body || '.mail-message-defaults';
-  return withAliasOperation(() => withPage(cfg.browser, cfg.browser.mailUrl, cfg.browser.mailTabHint, async page => {
+  const browser = await pool.get(parent);
+  return withAliasOperation(parent.id, () => withPage(browser, cfg.browser, cfg.browser.mailUrl, cfg.browser.mailTabHint, async page => {
     await page.bringToFront();
     const mail = page.frames().find(frame => isMailFrame(frame)) ?? await page.waitForFrame(frame => isMailFrame(frame), { timeout: cfg.browser.actionTimeoutMs });
     await mail.waitForSelector('.thread-list', { timeout: cfg.browser.actionTimeoutMs });
@@ -193,13 +194,13 @@ async function scanMailbox(cfg: Config, visit: (message: Awaited<ReturnType<type
   }));
 }
 
-export async function readCode(cfg: Config, db: Db, aliasEmail: string): Promise<CodeResult> {
+export async function readCode(svc: Services, aliasEmail: string): Promise<CodeResult & { parent: string }> {
+  const { cfg, db } = svc;
   const email = aliasEmail.trim().toLowerCase();
   const parent = aliasParent(db, email);
-  if (db.activeParent()?.id !== parent.id) throw new ApiError(503, 'Выберите родителя этого алиаса и подключите его профиль Dolphin.');
   const seen = db.seenRefs(email);
   let result: CodeResult | undefined;
-  const n = await scanMailbox(cfg, message => {
+  const n = await scanMailbox(svc, parent, message => {
     if (!message.header.recipients.includes(email)) return;
     if (message.header.date === null) throw new ApiError(503, 'Не удалось распознать дату письма: свежесть кода не подтверждена.');
     const age = Date.now() - message.header.date;
@@ -208,13 +209,12 @@ export async function readCode(cfg: Config, db: Db, aliasEmail: string): Promise
     if (!extracted) return;
     const ref = createHash('sha256').update(JSON.stringify(message.rows) + '\n' + message.body).digest('hex');
     if (seen.has(ref)) return;
-    if (db.activeParent()?.id !== parent.id) throw new ApiError(409, 'Родитель изменился во время чтения. Повторите запрос.');
     db.recordCode(email, ref, extracted.code);
     result = { code: extracted.code, pattern: extracted.pattern, msgRef: ref, subject: message.header.subject };
     return true;
   });
-  if (result) return result;
-  throw new ApiError(404, `Новое письмо с кодом для ${email} не найдено среди ${n} последних писем (свежесть: ${cfg.code.freshnessMinutes} мин.).`);
+  if (result) return { ...result, parent: parent.email };
+  throw new ApiError(404, `Новое письмо с кодом для ${email} не найдено среди ${n} последних писем ящика ${parent.email} (свежесть: ${cfg.code.freshnessMinutes} мин.).`);
 }
 
 export interface MailMessage {
@@ -233,15 +233,14 @@ export interface MailMessage {
  * match — правило запрошенного вида (без вырезания кода): проход останавливается на первом, самом новом
  * подходящем письме, как и поиск по IMAP. Без него собираются все письма на алиас.
  */
-export async function readAliasMessages(cfg: Config, db: Db, aliasEmail: string, sentAfterMs: number, skipParents: string[] = [], match?: Omit<MailKindRule, 'patterns'>) {
+export async function readAliasMessages(svc: Services, aliasEmail: string, sentAfterMs: number, skipParents: string[] = [], match?: Omit<MailKindRule, 'patterns'>) {
   const email = aliasEmail.trim().toLowerCase();
-  const parent = aliasParent(db, email);
+  const parent = aliasParent(svc.db, email);
   if (skipParents.includes(parent.email)) return { parent: parent.email, skipped: true, messages: [] as MailMessage[] };
-  if (db.activeParent()?.id !== parent.id) throw new ApiError(503, `Родитель алиаса ${parent.email} не подключён: откройте его профиль Dolphin и сделайте активным.`);
   // Время в заголовке может быть с точностью до минуты: письмо из той же минуты не теряем.
   const after = Math.floor(sentAfterMs / 60000) * 60000;
   const messages: MailMessage[] = [];
-  await scanMailbox(cfg, (message, pageOffsetMinutes) => {
+  await scanMailbox(svc, parent, (message, pageOffsetMinutes) => {
     const { header } = message;
     const receivedAt = header.date === null ? 0 : pageDateToUtc(header.dateText, header.date, pageOffsetMinutes);
     if (sentAfterMs > 0) {
