@@ -16,6 +16,11 @@
     "apiUrl": "",
     "pollIntervalMs": 15000
   },
+  "snapshot": {
+    "host": "0.0.0.0",
+    "port": 0,
+    "token": ""
+  },
   "domains": ["icloud.com"],
   "kinds": {
     "CODE_KIND_SIGN_UP": {

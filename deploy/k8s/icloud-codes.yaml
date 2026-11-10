@@ -1,0 +1,149 @@
+# Сервис кодов (gRPC MailCodeService) в Kubernetes.
+# Подставьте: <namespace>, <image> (образ из Dockerfile в корне репозитория), <host> (адрес ingress для приложения на Windows),
+# <tls-secret> и секрет SNAPSHOT_TOKEN — тот же, что cluster.token в config.json приложения.
+#
+# Пилот обращается к gRPC внутри кластера: icloud-codes.<namespace>.svc:50051 (без TLS, как раньше).
+# Приложение на Windows ходит наружу на https://<host>: PUT /snapshot (пароли и алиасы), GET /status (состояние ящиков).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: icloud-codes
+  namespace: <namespace>
+data:
+  # Остальное — значения по умолчанию (как в mail-code.example.json); правила писем можно переопределить здесь в "kinds".
+  # Ящиков (imap.accounts) здесь нет: они приходят снимком от приложения.
+  mail-code.json: |
+    {
+      "grpc": { "host": "0.0.0.0", "port": 50051, "maxWaitSeconds": 120, "pollIntervalMs": 3000 },
+      "browser": { "enabled": false },
+      "snapshot": { "host": "0.0.0.0", "port": 8080 },
+      "domains": ["icloud.com"]
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: icloud-codes
+  namespace: <namespace>
+type: Opaque
+stringData:
+  # Длинная случайная строка (например, openssl rand -hex 32); та же — в cluster.token в config.json приложения.
+  SNAPSHOT_TOKEN: <secret>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: icloud-codes
+  namespace: <namespace>
+spec:
+  # Ровно один экземпляр: каждый держит свои IMAP-сессии ко всем Apple ID родителей,
+  # а второй удвоил бы входы. Recreate — старый под уходит до запуска нового.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: icloud-codes
+  template:
+    metadata:
+      labels:
+        app: icloud-codes
+    # ConfigMap читается при запуске: после его изменения — kubectl rollout restart deployment/icloud-codes.
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: icloud-codes
+          image: <image>
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: snapshot
+              containerPort: 8080
+          env:
+            - name: MAIL_CODE_CONFIG
+              value: /config/mail-code.json
+            - name: SNAPSHOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: icloud-codes
+                  key: SNAPSHOT_TOKEN
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            grpc:
+              port: 50051
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: config
+          configMap:
+            name: icloud-codes
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: icloud-codes
+  namespace: <namespace>
+spec:
+  selector:
+    app: icloud-codes
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      appProtocol: grpc
+    - name: snapshot
+      port: 8080
+      targetPort: snapshot
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: icloud-codes
+  namespace: <namespace>
+  annotations:
+    # Снимок с тысячами алиасов больше 1 МБ по умолчанию у ingress-nginx; у пода предел snapshot.maxBytes = 32 МБ.
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+spec:
+  tls:
+    - hosts: [<host>]
+      secretName: <tls-secret>
+  rules:
+    - host: <host>
+      http:
+        paths:
+          # Наружу — только приём снимка и состояние; gRPC остаётся внутри кластера.
+          - path: /snapshot
+            pathType: Exact
+            backend:
+              service:
+                name: icloud-codes
+                port:
+                  name: snapshot
+          - path: /status
+            pathType: Exact
+            backend:
+              service:
+                name: icloud-codes
+                port:
+                  name: snapshot

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { accountOf, imapStatusPath, readImapAccounts, readImapStatus, removeImapAccount, saveImapAccount } from './imapAccounts';
+import { accountOf, imapStatusPath, readImapAccounts, readImapCredentials, readImapStatus, removeImapAccount, saveImapAccount } from './imapAccounts';
 
 function temp(t: { after: (fn: () => void) => void }) {
   const root = mkdtempSync(path.join(tmpdir(), 'icloud-imap-accounts-'));
@@ -44,6 +44,28 @@ test('a missing mail-code.json is created with only the account', t => {
   assert.deepEqual(readImapAccounts(file), []);
   saveImapAccount(file, { email: 'p@icloud.com', password: 'pw' });
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { imap: { accounts: [{ email: 'p@icloud.com', password: 'pw', proxy: '' }] } });
+});
+
+test('credentials for the cluster: only real passwords, last entry wins; an unreadable file throws instead of an empty list', t => {
+  const file = temp(t);
+  assert.throws(() => readImapCredentials(file), /не найден/);
+  writeFileSync(file, JSON.stringify({ grpc: {} }));
+  assert.deepEqual(readImapCredentials(file), []);
+  writeFileSync(file, JSON.stringify({ imap: { accounts: [
+    { email: 'P1@icloud.com', password: 'old' },
+    { email: 'example@icloud.com', password: 'xxxx-xxxx-xxxx-xxxx' },
+    { email: 'empty@icloud.com', password: ' ' },
+    { email: 'mail@gmail.com', user: 'p2@icloud.com', password: 'pw2', proxy: 'socks5://10.0.0.1:1080' },
+    { email: 'p1@icloud.com', password: ' new ' },
+  ] } }));
+  assert.deepEqual(readImapCredentials(file), [
+    { email: 'mail@gmail.com', user: 'p2@icloud.com', password: 'pw2', proxy: 'socks5://10.0.0.1:1080' },
+    { email: 'p1@icloud.com', password: 'new' },
+  ]);
+  writeFileSync(file, '{ "imap": ');
+  assert.throws(() => readImapCredentials(file), /не читается/);
+  writeFileSync(file, JSON.stringify({ imap: { accounts: {} } }));
+  assert.throws(() => readImapCredentials(file), /не массив/);
 });
 
 test('status of a stopped gRPC service is ignored', t => {

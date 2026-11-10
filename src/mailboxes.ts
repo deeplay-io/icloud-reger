@@ -227,6 +227,11 @@ export class Mailboxes {
     return this.healthy.get(email) ?? [];
   }
 
+  /** Состояние ящиков, в которые уже пробовали войти (то же, что пишется в imap-status.json). */
+  statusSnapshot(): Record<string, ImapStatusEntry> {
+    return { ...this.status };
+  }
+
   /** Ящики, в которых искать письмо на алиас. */
   private targets(email: string): Mailbox[] {
     const owner = this.options.registry?.parentOf(email);

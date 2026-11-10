@@ -23,7 +23,9 @@ function message(e: unknown): string {
  * (нет пароля в mail-code.json, отказ во входе, нет сети). Основной сервис сам пропускает
  * родителей из исправных IMAP-ящиков, поэтому браузер открывается только когда нужен.
  */
-export function combineSources(imapSource: ImapSource | null, browser: BrowserSource | null): FindCode {
+const NO_ACCOUNTS = 'в mail-code.json не задан ни один IMAP-аккаунт, а чтение через браузер выключено (browser.enabled)';
+
+export function combineSources(imapSource: ImapSource | null, browser: BrowserSource | null, noAccounts: () => string = () => NO_ACCOUNTS): FindCode {
   return async (email, kind, sentAfterMs) => {
     const imap = imapSource && (imapSource.size?.() ?? 1) > 0 ? imapSource : null;
     let imapError = '';
@@ -36,7 +38,7 @@ export function combineSources(imapSource: ImapSource | null, browser: BrowserSo
         imapError = message(error);
       }
     }
-    if (!browser) throw new Error('в mail-code.json не задан ни один IMAP-аккаунт, а чтение через браузер выключено (browser.enabled)');
+    if (!browser) throw new Error(noAccounts());
     try {
       const found = await browser.find(email, kind, sentAfterMs, imap ? imap.healthyEmails(email) : []);
       return found.status === 'skipped' || found.status === 'later' ? { status: 'none' } : found;

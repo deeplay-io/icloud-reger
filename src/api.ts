@@ -10,6 +10,7 @@ import type { AliasSyncScheduler } from './aliasSyncScheduler';
 import { validAliasPrefix } from './aliasNames';
 import { accountOf, checkImapLogin, readImapAccounts, readImapStatus, removeImapAccount, saveImapAccount, ImapLoginError } from './imapAccounts';
 import type { Services } from './services';
+import type { ClusterSync } from './clusterSync';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -20,6 +21,8 @@ export interface ApiContext extends Services {
   /** mail-code.json: IMAP-пароли родителей для gRPC-сервиса. */
   mailCodeFile: string;
   log: (message: string) => void;
+  /** Сервис кодов в кластере (cluster.url в config.json): состояние ящиков приходит от него, а не из imap-status.json. */
+  cluster?: Pick<ClusterSync, 'status' | 'pushSoon'>;
 }
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
@@ -29,7 +32,14 @@ function fail(res: Response, e: unknown, fallback = 500): void {
 }
 
 export function createApi(ctx: ApiContext): Express {
-  const { cfg, db, pool, generator, syncs, mailCodeFile, log } = ctx;
+  const { cfg, db, pool, generator, syncs, mailCodeFile, log, cluster } = ctx;
+
+  /** Состояние ящиков: от сервиса в кластере, если он настроен, иначе от gRPC-сервиса на этой машине. */
+  function imapStatusNow(): { accounts: ReturnType<typeof readImapStatus>; error: string } {
+    if (!cluster) return { accounts: readImapStatus(mailCodeFile), error: '' };
+    const state = cluster.status();
+    return { accounts: state.accounts, error: state.ok === false ? state.error : '' };
+  }
   const app = express();
   app.use(express.json());
   // CORS: локальный сервис, интерфейс ходит сюда с file:// / другого origin
@@ -44,7 +54,8 @@ export function createApi(ctx: ApiContext): Express {
     next();
   });
 
-  function parentView(parent: ParentRow, counts: Map<number, number>, accounts = readImapAccounts(mailCodeFile), imapStatus = readImapStatus(mailCodeFile)) {
+  function parentView(parent: ParentRow, counts: Map<number, number>, accounts = readImapAccounts(mailCodeFile), imap = imapStatusNow()) {
+    const imapStatus = imap.accounts;
     const now = Date.now();
     const limit = aliasLimitOf(parent);
     const prefix = namePrefixOf(parent);
@@ -80,7 +91,7 @@ export function createApi(ctx: ApiContext): Express {
         proxy: account?.proxy ?? '',
         // unknown — пароль задан, но gRPC-сервис не запущен или ещё не входил в ящик.
         state: !account?.configured ? 'none' : status?.state ?? 'unknown',
-        error: status?.error ?? '',
+        error: status?.error ?? (account?.configured ? imap.error : ''),
       },
     };
   }
@@ -117,14 +128,16 @@ export function createApi(ctx: ApiContext): Express {
       },
       aliases: db.countAllAliases(),
       generator: { next: scheduled[0] ?? null },
+      // Без паролей и токена: только связь со сервисом кодов в кластере.
+      cluster: cluster ? (({ url, ok, error, at, pushedAt }) => ({ url, ok, error, at, pushedAt }))(cluster.status()) : null,
     });
   });
 
   app.get('/parents', (_req: Request, res: Response) => {
     const counts = db.aliasCounts();
     const accounts = readImapAccounts(mailCodeFile);
-    const imapStatus = readImapStatus(mailCodeFile);
-    res.json(db.listParents().map(parent => parentView(parent, counts, accounts, imapStatus)));
+    const imap = imapStatusNow();
+    res.json(db.listParents().map(parent => parentView(parent, counts, accounts, imap)));
   });
 
   function readSettings(body: any, current?: ParentRow) {
@@ -245,6 +258,7 @@ export function createApi(ctx: ApiContext): Express {
       }
       saveImapAccount(mailCodeFile, { email: parent.email, password, proxy });
       log(`[${parent.email}] IMAP: пароль проверен и сохранён в mail-code.json${proxy ? ' (через прокси)' : ''}`);
+      cluster?.pushSoon();
       res.json(viewOf(parent));
     } catch (e) { fail(res, e); }
   });
@@ -253,7 +267,10 @@ export function createApi(ctx: ApiContext): Express {
     try {
       const parent = parentFrom(req);
       removeImapAccount(mailCodeFile, parent.email);
-      log(`[${parent.email}] IMAP: пароль удалён из mail-code.json, коды этого родителя — только через браузер`);
+      log(`[${parent.email}] IMAP: пароль удалён из mail-code.json, ${cluster
+        ? 'сервис кодов в кластере перестанет читать его ящик: коды его алиасов выдаваться не будут'
+        : 'коды этого родителя — только через браузер'}`);
+      cluster?.pushSoon();
       res.json(viewOf(parent));
     } catch (e) { fail(res, e); }
   });

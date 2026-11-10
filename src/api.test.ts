@@ -4,14 +4,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { createApi } from './api';
+import { createApi, type ApiContext } from './api';
+import type { ClusterState } from './clusterSync';
 import { DEFAULTS } from './config';
 import { Db } from './db';
 import { BrowserPool } from './browser';
 import { AliasGenerator } from './aliasGen';
 import { AliasSyncScheduler } from './aliasSyncScheduler';
 
-async function setup(t: { after: (fn: () => void | Promise<void>) => void }, mailCode: object = { imap: { accounts: [] } }) {
+async function setup(t: { after: (fn: () => void | Promise<void>) => void }, mailCode: object = { imap: { accounts: [] } }, cluster?: ApiContext['cluster']) {
   const root = mkdtempSync(path.join(tmpdir(), 'icloud-api-test-'));
   const mailCodeFile = path.join(root, 'mail-code.json');
   writeFileSync(mailCodeFile, JSON.stringify(mailCode));
@@ -28,7 +29,7 @@ async function setup(t: { after: (fn: () => void | Promise<void>) => void }, mai
   pool.drop = id => { dropped.push(id); drop(id); };
   const generator = new AliasGenerator(cfg, db, log, { create: async () => { throw new Error('не в тесте'); }, ready: id => pool.isConnected(id) });
   const syncs = new AliasSyncScheduler(db, async () => { throw new Error('не в тесте'); }, log);
-  const server = createApi({ cfg, db, pool, generator, syncs, mailCodeFile, log }).listen(0, '127.0.0.1');
+  const server = createApi({ cfg, db, pool, generator, syncs, mailCodeFile, log, cluster }).listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   t.after(async () => {
     await new Promise<void>(resolve => server.close(() => resolve()));
@@ -165,6 +166,47 @@ test('IMAP password state comes from mail-code.json and the gRPC status file; pa
   const saved = JSON.parse(readFileSync(mailCodeFile, 'utf8'));
   assert.deepEqual(saved.imap.accounts.map((a: any) => a.email), ['login-only@gmail.com', 'keep@icloud.com']);
   assert.equal(saved.grpc.port, 50051, 'остальные настройки mail-code.json не трогаются');
+});
+
+test('with a cluster configured, mailbox state comes from the cluster service and a saved password is pushed at once', async t => {
+  let state: ClusterState = {
+    url: 'https://codes.example.com', ok: true, error: '', at: 1, pushedAt: 1,
+    accounts: { 'owner@icloud.com': { state: 'connected', error: '', at: 1 } },
+  };
+  let pushes = 0;
+  const { db, call, root } = await setup(t, {
+    imap: { accounts: [
+      { email: 'owner@icloud.com', password: 'abcd-efgh-ijkl-mnop' },
+      { email: 'other@icloud.com', password: 'qrst-uvwx-yzab-cdef' },
+    ] },
+  }, { status: () => state, pushSoon: () => { pushes++; } });
+  const owner = db.addParent('owner@icloud.com');
+  const other = db.addParent('other@icloud.com');
+  // Файл состояния от локального gRPC при настроенном кластере не учитывается.
+  writeFileSync(path.join(root, 'imap-status.json'), JSON.stringify({ pid: process.pid, updatedAt: Date.now(), accounts: {
+    'owner@icloud.com': { state: 'auth', error: 'локальный gRPC', at: Date.now() },
+  } }));
+  const row = async (id: number) => (await call('GET', '/parents')).body.find((p: any) => p.id === id);
+  assert.equal((await row(owner.id)).imap.state, 'connected');
+  assert.deepEqual((await row(other.id)).imap, { configured: true, proxy: '', state: 'unknown', error: '' });
+
+  const health = (await call('GET', '/health')).body;
+  assert.deepEqual(health.cluster, { url: 'https://codes.example.com', ok: true, error: '', at: 1, pushedAt: 1 });
+  assert.ok(!JSON.stringify(health).includes('abcd-efgh'));
+
+  state = { ...state, ok: false, error: 'сервис кодов в кластере недоступен: fetch failed', accounts: null };
+  const offline = await row(owner.id);
+  assert.equal(offline.imap.state, 'unknown');
+  assert.match(offline.imap.error, /недоступен/);
+  assert.equal((await call('GET', '/health')).body.cluster.ok, false);
+
+  await call('DELETE', `/parents/${other.id}/imap`);
+  assert.equal(pushes, 1, 'удалённый пароль сразу уходит в кластер');
+});
+
+test('without a cluster /health reports cluster: null', async t => {
+  const { call } = await setup(t);
+  assert.equal((await call('GET', '/health')).body.cluster, null);
 });
 
 test('/aliases pages with parent filter and search; without limit returns the plain list', async t => {

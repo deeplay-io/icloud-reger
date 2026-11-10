@@ -8,6 +8,7 @@ import { syncAliases } from './aliasSync';
 import { createAlias } from './aliasCreate';
 import { AliasSyncScheduler } from './aliasSyncScheduler';
 import { BrowserPool } from './browser';
+import { ClusterSync, buildSnapshot } from './clusterSync';
 
 function main(): void {
   const configFile = path.resolve(process.env.CONFIG_FILE ?? 'config.json');
@@ -31,7 +32,10 @@ function main(): void {
     void syncs.tick();
   };
 
-  const app = createApi({ ...svc, generator, syncs, mailCodeFile, log });
+  // Сервис кодов в кластере: держим у него актуальные пароли и алиасы родителей.
+  const cluster = cfg.cluster.url ? new ClusterSync(cfg.cluster, () => buildSnapshot(db, mailCodeFile), log) : undefined;
+
+  const app = createApi({ ...svc, generator, syncs, mailCodeFile, log, cluster });
   const server = app.listen(cfg.api.port, cfg.api.host, () => {
     log(`API запущен: http://${cfg.api.host}:${cfg.api.port}`);
     const working = db.workingParents();
@@ -42,6 +46,10 @@ function main(): void {
     pool.start();
     syncs.start();
     generator.start();
+    if (cluster) {
+      log(`кластер: IMAP-пароли и алиасы родителей отправляются сервису кодов ${cfg.cluster.url}`);
+      cluster.start();
+    }
   });
   server.on('error', (error: NodeJS.ErrnoException) => {
     log(error.code === 'EADDRINUSE'
@@ -55,6 +63,7 @@ function main(): void {
     log('остановка');
     generator.stop();
     syncs.stop();
+    cluster?.stop();
     // Браузеры только отпускаются: профили Dolphin с залогиненными Apple ID остаются открытыми.
     pool.stop();
     db.close();

@@ -56,11 +56,25 @@ export interface RegistryConfig {
    */
   dbFile: string;
 }
+/**
+ * Приём снимка от приложения на Windows (сервис кодов в кластере): IMAP-пароли родителей и чьи алиасы.
+ * Включён (port > 0) — ящики и родители алиасов берутся только из снимка, imap.accounts и база не читаются.
+ */
+export interface SnapshotConfig {
+  host: string;
+  /** 0 — выключено: ящики из imap.accounts, родители алиасов из базы основного сервиса. */
+  port: number;
+  /** Общий секрет с приложением (cluster.token в его config.json). Лучше задавать переменной SNAPSHOT_TOKEN. */
+  token: string;
+  /** Предел размера снимка в байтах. */
+  maxBytes: number;
+}
 export interface MailCodeConfig {
   grpc: GrpcConfig;
   imap: ImapConfig;
   browser: BrowserFallbackConfig;
   registry: RegistryConfig;
+  snapshot: SnapshotConfig;
   /** Домены обслуживаемых ящиков; адрес с другим доменом — UNKNOWN_MAILBOX. */
   domains: string[];
   /** Письмо относится к виду, если подходит под его правило и не подходит под правило другого вида. */
@@ -78,6 +92,7 @@ export const MAIL_CODE_DEFAULTS: MailCodeConfig = {
   imap: { host: 'imap.mail.me.com', port: 993, accounts: [], reconnectDelayMs: 30000 },
   browser: { enabled: true, apiUrl: '', pollIntervalMs: 15000 },
   registry: { dbFile: '' },
+  snapshot: { host: '0.0.0.0', port: 0, token: '', maxBytes: 32 * 1024 * 1024 },
   domains: ['icloud.com'],
   kinds: {
     CODE_KIND_SIGN_UP: { subject: 'verif|confirm|sign.?up|регистрац|подтвержд', patterns: SIX_DIGITS },
@@ -102,6 +117,11 @@ export function loadMailCodeConfig(file = process.env.MAIL_CODE_CONFIG ?? 'mail-
     throw new Error('grpc: укажите port, maxWaitSeconds >= 0 и pollIntervalMs >= 100');
   }
   if (cfg.browser.pollIntervalMs < 1000) throw new Error('browser.pollIntervalMs: не меньше 1000');
+  cfg.snapshot.token = process.env.SNAPSHOT_TOKEN || cfg.snapshot.token;
+  if (!Number.isInteger(cfg.snapshot.port) || cfg.snapshot.port < 0 || cfg.snapshot.port > 65535) throw new Error('snapshot.port: 0 (выключено) или номер порта');
+  // Через этот порт приходят пароли от Apple ID: без секрета его не открываем.
+  if (cfg.snapshot.port && cfg.snapshot.token.length < 16) throw new Error('snapshot.token: задайте секрет не короче 16 символов (переменная SNAPSHOT_TOKEN), тот же, что cluster.token в config.json приложения');
+  if (!(cfg.snapshot.maxBytes > 0)) throw new Error('snapshot.maxBytes: больше 0');
   cfg.browser.apiUrl = (cfg.browser.apiUrl || process.env.CODES_API_URL || 'http://127.0.0.1:8787').replace(/\/+$/, '');
   const dbFile = cfg.registry.dbFile || process.env.CODES_DB || './data/codes.db';
   cfg.registry.dbFile = path.isAbsolute(dbFile) ? dbFile : path.join(path.dirname(p), dbFile);
