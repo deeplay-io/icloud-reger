@@ -432,6 +432,24 @@ async function renderAliasTable() {
   });
 }
 
+/** Все алиасы с родителями — в CSV-файл; путь выбирается в диалоге сохранения. */
+async function exportAliases() {
+  const button = $('#alias-export');
+  const out = $('#alias-export-result');
+  button.disabled = true;
+  try {
+    const r = await window.api.invoke('aliases:export-csv');
+    if (r.canceled) return;
+    out.hidden = false;
+    out.textContent = r.ok ? 'Выгружено алиасов: ' + r.count + ' → ' + r.file : r.error;
+    out.className = 'result-line ' + (r.ok ? 'ok' : 'err');
+  } catch (e) {
+    out.hidden = false;
+    out.textContent = 'Не удалось выгрузить: ' + e.message;
+    out.className = 'result-line err';
+  } finally { button.disabled = false; }
+}
+
 async function loadAliases() {
   const r = await callApi('GET', '/parents');
   const list = Array.isArray(r.body) ? r.body : parents;
@@ -442,8 +460,11 @@ async function loadAliases() {
       escapeHtml(p.email) + ' · ' + p.aliases + (p.archived ? ' (отключён)' : '') + '</option>').join('') +
     '</select>' +
     '<input id="alias-q" type="text" spellcheck="false" placeholder="поиск по адресу или метке" value="' + escapeHtml(aliasState.q) + '" />' +
+    '<button id="alias-export" class="secondary" title="Алиасы всех родителей, в том числе отключённых, без учёта фильтра и поиска. Столбцы: alias, parent, label.">Экспорт всех в CSV</button>' +
     '</div>' +
+    '<div id="alias-export-result" class="result-line" role="status" hidden></div>' +
     '<div id="alias-table"></div>';
+  $('#alias-export').onclick = exportAliases;
   $('#alias-parent').onchange = () => {
     aliasState.parent = $('#alias-parent').value;
     aliasState.page = 1;

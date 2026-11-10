@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -273,6 +273,44 @@ ipcMain.handle('api:proxy', async (_e, { method = 'GET', path: p = '/', body } =
   } catch (e) {
     return { status: 0, body: { error: 'API недоступен (http://127.0.0.1:' + port + '): ' + e.message } };
   }
+});
+
+// Вкладка «Алиасы»: все алиасы с родителями в CSV. Список собирает сервис (база у него), файл сохраняет окно —
+// с BOM, чтобы Excel прочитал UTF-8: в метках из iCloud бывает кириллица.
+ipcMain.handle('aliases:export-csv', async (e) => {
+  const port = readApiPort();
+  let res;
+  let csv;
+  try {
+    res = await fetch('http://127.0.0.1:' + port + '/aliases?format=csv');
+    csv = await res.text();
+  } catch {
+    return { ok: false, error: 'Сервис не запущен: нажмите «▶ Запустить сервис».' };
+  }
+  if (!res.ok) {
+    let error = csv;
+    try { error = JSON.parse(csv).error || csv; } catch { /* не JSON */ }
+    return { ok: false, error: 'Сервис не отдал список алиасов (HTTP ' + res.status + '): ' + error };
+  }
+  if (!String(res.headers.get('content-type')).startsWith('text/csv')) {
+    return { ok: false, error: 'Сервис запущен из старой сборки и не умеет выгрузку: остановите и запустите его снова.' };
+  }
+  const count = Number(res.headers.get('x-alias-count')) || 0;
+  const d = new Date();
+  const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const { canceled, filePath } = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
+    title: 'Экспорт алиасов в CSV',
+    defaultPath: path.join(app.getPath('downloads'), 'aliases-' + date + '.csv'),
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    fs.writeFileSync(filePath, '﻿' + csv, 'utf8');
+  } catch (err) {
+    return { ok: false, error: 'Не удалось записать ' + filePath + ': ' + err.message };
+  }
+  pushLog('алиасы выгружены в CSV: ' + count + ' → ' + filePath);
+  return { ok: true, file: filePath, count };
 });
 
 // Обновления: релизы приватного репозитория, скачиваются сами, ставятся только по кнопке.
