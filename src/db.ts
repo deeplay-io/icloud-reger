@@ -302,19 +302,31 @@ export class Db {
     return nextAliasName(rows.map(row => row.name), prefix);
   }
 
-  /** Алиасы с e-mail родителя, новые сверху; parentId и q (часть адреса или метки) сужают выборку. */
-  listAliases(filter: { parentId?: number; q?: string; limit?: number; offset?: number } = {}): { total: number; rows: AliasListRow[] } {
+  /** WHERE для выборок алиасов (таблица a): parentId и q — часть адреса или метки. */
+  private aliasFilter(filter: { parentId?: number; q?: string }): { clause: string; values: unknown[] } {
     const where: string[] = [];
     const values: unknown[] = [];
     if (filter.parentId) { where.push('a.parent_id = ?'); values.push(filter.parentId); }
     const q = filter.q?.trim().toLowerCase();
     if (q) { where.push("(instr(a.email, ?) > 0 OR instr(lower(a.name), ?) > 0)"); values.push(q, q); }
-    const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', values };
+  }
+
+  /** Алиасы с e-mail родителя, новые сверху; parentId и q (часть адреса или метки) сужают выборку. */
+  listAliases(filter: { parentId?: number; q?: string; limit?: number; offset?: number } = {}): { total: number; rows: AliasListRow[] } {
+    const { clause, values } = this.aliasFilter(filter);
     const total = (this.d.prepare(`SELECT COUNT(*) AS n FROM aliases a ${clause}`).get(...values) as { n: number }).n;
     const page = filter.limit ? ' LIMIT ? OFFSET ?' : '';
     const rows = this.d.prepare(`SELECT a.*, p.email AS parent FROM aliases a JOIN parents p ON p.id = a.parent_id ${clause} ORDER BY a.id DESC${page}`)
       .all(...values, ...(filter.limit ? [filter.limit, filter.offset ?? 0] : [])) as AliasListRow[];
     return { total, rows };
+  }
+
+  /** Выгрузка: алиасы всех родителей, отключённых тоже, по родителю и внутри по адресу. Фильтр — как у listAliases. */
+  exportAliases(filter: { parentId?: number; q?: string } = {}): { email: string; name: string; parent: string }[] {
+    const { clause, values } = this.aliasFilter(filter);
+    return this.d.prepare(`SELECT a.email, a.name, p.email AS parent FROM aliases a JOIN parents p ON p.id = a.parent_id ${clause} ORDER BY p.email, a.email`)
+      .all(...values) as { email: string; name: string; parent: string }[];
   }
 
   /** Сначала родители в работе, затем отключённые; внутри — в порядке добавления. */

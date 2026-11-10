@@ -44,7 +44,7 @@ async function setup(t: { after: (fn: () => void | Promise<void>) => void }, mai
     try { data = JSON.parse(text); } catch { data = text; }
     return { status: res.status, body: data };
   };
-  return { db, cfg, logs, dropped, call, mailCodeFile, root };
+  return { db, cfg, logs, dropped, call, mailCodeFile, root, url };
 }
 
 test('parents are added, configured and listed independently; auto-registration starts off', async t => {
@@ -224,6 +224,41 @@ test('/aliases pages with parent filter and search; without limit returns the pl
   const search = await call('GET', '/aliases?limit=1&q=BOX');
   assert.equal(search.body.total, 2);
   assert.equal(search.body.rows.length, 1);
+});
+
+test('/aliases?format=csv exports every alias with its parent, archived parents included', async t => {
+  const { db, url } = await setup(t);
+  const second = db.addParent('second@icloud.com');
+  const first = db.addParent('first@icloud.com');
+  const gone = db.addParent('gone@icloud.com', { archived: true });
+  db.addAlias(second.id, 'b1@icloud.com', 'Почта, "банк"');
+  db.addAlias(first.id, 'a2@icloud.com', 'box2');
+  db.addAlias(first.id, 'a1@icloud.com', 'box1');
+  db.addAlias(gone.id, 'g1@icloud.com', 'old1');
+  const get = async (route: string) => {
+    const res = await fetch(url + route);
+    return { status: res.status, headers: res.headers, body: Buffer.from(await res.arrayBuffer()).toString('utf8') };
+  };
+
+  const res = await get('/aliases?format=csv&limit=1&offset=5');
+  assert.equal(res.status, 200);
+  assert.equal(res.body,
+    'alias,parent,label\r\n' +
+    'a1@icloud.com,first@icloud.com,box1\r\n' +
+    'a2@icloud.com,first@icloud.com,box2\r\n' +
+    'g1@icloud.com,gone@icloud.com,old1\r\n' +
+    'b1@icloud.com,second@icloud.com,"Почта, ""банк"""\r\n', 'по родителю, внутри по адресу; limit и offset не действуют');
+  assert.equal(res.body.trimEnd().split('\r\n').length - 1, db.countAllAliases());
+  assert.equal(res.headers.get('x-alias-count'), '4');
+  assert.match(res.headers.get('content-type')!, /^text\/csv; charset=utf-8/);
+  assert.match(res.headers.get('content-disposition')!, /^attachment; filename="aliases-\d{4}-\d{2}-\d{2}\.csv"$/);
+  assert.ok(!res.body.startsWith('﻿'), 'BOM добавляет только окно в сохранённый файл');
+
+  const one = await get(`/aliases?format=csv&parent=${first.id}&q=box1`);
+  assert.equal(one.body, 'alias,parent,label\r\na1@icloud.com,first@icloud.com,box1\r\n');
+  const none = await get('/aliases?format=csv&q=nothing');
+  assert.equal(none.body, 'alias,parent,label\r\n');
+  assert.equal(none.headers.get('x-alias-count'), '0');
 });
 
 test('/mail/messages decides from the database before touching the browser and keeps its contract', async t => {

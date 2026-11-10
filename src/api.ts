@@ -11,6 +11,7 @@ import { validAliasPrefix } from './aliasNames';
 import { accountOf, checkImapLogin, readImapAccounts, readImapStatus, removeImapAccount, saveImapAccount, ImapLoginError } from './imapAccounts';
 import type { Services } from './services';
 import type { ClusterSync } from './clusterSync';
+import { toCsv } from './csv';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -26,6 +27,10 @@ export interface ApiContext extends Services {
 }
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
+
+/** Дата по часам этой машины, YYYY-MM-DD: для имени выгруженного файла. */
+const localDate = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 function fail(res: Response, e: unknown, fallback = 500): void {
   res.status(e instanceof ApiError ? e.status : fallback).json({ error: errorText(e) });
@@ -323,10 +328,20 @@ export function createApi(ctx: ApiContext): Express {
     }
   });
 
-  // Без limit — весь список массивом (как раньше); с limit — страница { total, rows } для окна.
+  // Без limit — весь список массивом (как раньше); с limit — страница { total, rows } для окна;
+  // format=csv — выгрузка «алиас, родитель, метка» целиком (limit и offset не действуют), окно сохраняет её в файл.
   app.get('/aliases', (req: Request, res: Response) => {
     const parentId = Number(req.query.parent) || undefined;
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    if (req.query.format === 'csv') {
+      const rows = db.exportAliases({ parentId, q });
+      res.type('text/csv').set({
+        'Content-Disposition': `attachment; filename="aliases-${localDate()}.csv"`,
+        'X-Alias-Count': String(rows.length),
+      });
+      res.send(toCsv([['alias', 'parent', 'label'], ...rows.map(row => [row.email, row.parent, row.name])]));
+      return;
+    }
     const limit = Math.min(500, Number(req.query.limit) || 0) || undefined;
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const result = db.listAliases({ parentId, q, limit, offset });
