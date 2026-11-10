@@ -202,6 +202,19 @@ test('the app never pushes a snapshot it could not read, and reports a wrong tok
   assert.equal(pod.reloads.length, 1, 'битый mail-code.json не превращается в пустой снимок');
   assert.equal(pod.receiver.status().version !== null, true);
 
+  // Под отклонил снимок (кривой прокси вписан руками): тот же снимок не отправляется на каждой сверке.
+  writeFileSync(mailCodeFile, JSON.stringify({ imap: { accounts: [{ email: 'p1@icloud.com', password: PASSWORD, proxy: 'ftp://x' }] } }));
+  const refusals = () => pod.logs.filter(line => /снимок не принят \(400\)/.test(line)).length;
+  await sync.tick();
+  await sync.tick();
+  assert.equal(refusals(), 1);
+  assert.equal(sync.status().ok, false);
+  assert.match(sync.status().error, /снимок отклонён.*proxy/);
+  writeFileSync(mailCodeFile, JSON.stringify({ imap: { accounts: [{ email: 'p1@icloud.com', password: PASSWORD, proxy: 'socks5://10.0.0.1:1080' }] } }));
+  await sync.tick();
+  assert.equal(pod.reloads.length, 2, 'исправленный снимок уходит сразу');
+  assert.equal(sync.status().ok, true);
+
   const wrong = new ClusterSync({ url: pod.url, token: 'another-token-0123456789', intervalMs: 60_000 }, () => snapshot(), line => { logs.push(line); });
   await wrong.tick();
   assert.equal(wrong.status().ok, false);

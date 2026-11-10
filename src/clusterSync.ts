@@ -26,7 +26,15 @@ export function buildSnapshot(db: Pick<Db, 'aliasParents'>, mailCodeFile: string
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Отклонённый снимок без изменений повторяется не чаще: вдруг на стороне пода подняли предел или поправили проверку. */
+const REJECTED_RETRY_MS = 10 * 60 * 1000;
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
+
+class HttpError extends Error {
+  constructor(readonly status: number, text: string) {
+    super(text);
+  }
+}
 
 /**
  * Держит у сервиса кодов в кластере актуальный снимок. Раз в intervalMs спрашивает GET /status:
@@ -38,6 +46,7 @@ export class ClusterSync {
   private running: Promise<void> | null = null;
   private again = false;
   private reported = '';
+  private rejected: { version: string; error: string; until: number } | null = null;
   private state: ClusterState;
 
   constructor(
@@ -94,17 +103,31 @@ export class ClusterSync {
     try { snapshot = this.build(); } catch (error) { buildError = `снимок не собран и не отправлен: ${message(error)}`; }
     try {
       let remote = await this.request('GET', '/status');
+      let pushError = '';
       if (snapshot) {
         const version = snapshotVersion(snapshot);
-        if (remote.version !== version) {
+        const rejected = this.rejected?.version === version && this.now() < this.rejected.until ? this.rejected : null;
+        if (remote.version !== version && rejected) {
+          // Тот же снимок уже отклонён: не гоняем его каждые 10 секунд, ждём исправления или паузы.
+          pushError = rejected.error;
+        } else if (remote.version !== version) {
           const restarted = remote.version === null;
-          remote = await this.request('PUT', '/snapshot', { version, ...snapshot });
-          this.state.pushedAt = this.now();
-          this.log(`кластер: снимок отправлен — ящиков ${snapshot.accounts.length}, алиасов ${Object.keys(snapshot.aliases).length}` +
-            (restarted ? ' (у сервиса в кластере снимка ещё не было)' : ''));
+          try {
+            remote = await this.request('PUT', '/snapshot', { version, ...snapshot });
+            this.rejected = null;
+            this.state.pushedAt = this.now();
+            this.log(`кластер: снимок отправлен — ящиков ${snapshot.accounts.length}, алиасов ${Object.keys(snapshot.aliases).length}` +
+              (restarted ? ' (у сервиса в кластере снимка ещё не было)' : ''));
+          } catch (error) {
+            // 400/413 — дело в содержимом снимка (например, кривой прокси в mail-code.json); 401 и сеть — нет.
+            if (!(error instanceof HttpError) || error.status === 401 || error.status < 400 || error.status >= 500) throw error;
+            pushError = `снимок отклонён: ${error.message}. Исправьте mail-code.json — отправка повторится после изменения или через 10 минут`;
+            this.rejected = { version, error: pushError, until: this.now() + REJECTED_RETRY_MS };
+          }
         }
       }
-      this.state = { ...this.state, ok: !buildError, error: buildError, at: this.now(), accounts: remote.accounts };
+      const error = [buildError, pushError].filter(Boolean).join('; ');
+      this.state = { ...this.state, ok: !error, error, at: this.now(), accounts: remote.accounts };
     } catch (error) {
       const text = `сервис кодов в кластере (${this.cfg.url}) недоступен: ${message(error)}`;
       this.state = { ...this.state, ok: false, error: buildError ? `${buildError}; ${text}` : text, accounts: null };
@@ -132,7 +155,7 @@ export class ClusterSync {
       res = await send();
     }
     const data = await res.json().catch(() => null) as (Partial<SnapshotStatus> & { error?: string }) | null;
-    if (!res.ok) throw new Error(`${method} ${route}: HTTP ${res.status}${data?.error ? ` — ${data.error}` : ''}`);
+    if (!res.ok) throw new HttpError(res.status, `${method} ${route}: HTTP ${res.status}${data?.error ? ` — ${data.error}` : ''}`);
     if (!data || typeof data !== 'object' || !('version' in data) || typeof data.accounts !== 'object' || data.accounts === null) {
       throw new Error(`${method} ${route}: ответ не от сервиса кодов (проверьте cluster.url)`);
     }

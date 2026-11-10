@@ -267,7 +267,9 @@ export function createApi(ctx: ApiContext): Express {
     try {
       const parent = parentFrom(req);
       removeImapAccount(mailCodeFile, parent.email);
-      log(`[${parent.email}] IMAP: пароль удалён из mail-code.json, коды этого родителя — только через браузер`);
+      log(`[${parent.email}] IMAP: пароль удалён из mail-code.json, ${cluster
+        ? 'сервис кодов в кластере перестанет читать его ящик: коды его алиасов выдаваться не будут'
+        : 'коды этого родителя — только через браузер'}`);
       cluster?.pushSoon();
       res.json(viewOf(parent));
     } catch (e) { fail(res, e); }

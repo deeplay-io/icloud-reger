@@ -21,6 +21,10 @@ test('cluster is off without url; with url it needs a token of the pod', t => {
   assert.throws(() => loadConfig(file), /cluster\.token/);
   writeFileSync(file, JSON.stringify({ cluster: { url: 'codes.example.com', token: 'x'.repeat(20) } }));
   assert.throws(() => loadConfig(file), /cluster\.url/);
+  writeFileSync(file, JSON.stringify({ cluster: { url: 'http://codes.example.com', token: 'x'.repeat(20) } }));
+  assert.throws(() => loadConfig(file), /только https/, 'пароли не уходят по сети открытым текстом');
+  writeFileSync(file, JSON.stringify({ cluster: { url: 'http://127.0.0.1:8098', token: 'x'.repeat(20) } }));
+  assert.equal(loadConfig(file).cluster.url, 'http://127.0.0.1:8098');
   writeFileSync(file, JSON.stringify({ cluster: { url: 'https://codes.example.com/', token: ` ${'x'.repeat(20)} ` } }));
   const cfg = loadConfig(file);
   assert.equal(cfg.cluster.url, 'https://codes.example.com');

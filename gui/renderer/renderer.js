@@ -48,6 +48,9 @@ const GENERATOR_TEXT = {
   scheduled: 'вкл',
   creating: 'создаю…',
 };
+// Коды выдаёт сервис в кластере (cluster.url в config.json): запасного пути через браузер у него нет.
+let clusterMode = false;
+const IMAP_NONE_CLUSTER = 'Без пароля сервис кодов в кластере не читает ящик этого родителя: коды его алиасов не выдаются (запасного пути через браузер там нет).';
 const IMAP_TEXT = {
   none: ['нет пароля', 'wait', 'Коды gRPC читает только через браузер. Задайте app-specific пароль в настройках родителя.'],
   unknown: ['пароль задан', 'wait', 'gRPC-сервис не запущен или ещё не входил в ящик.'],
@@ -76,7 +79,8 @@ function hourCell(p) {
 
 function imapCell(p) {
   const [text, cls, hint] = IMAP_TEXT[p.imap.state] || [p.imap.state, 'wait', ''];
-  return '<span title="' + escapeHtml(p.imap.error || hint) + '"><span class="dot ' + cls + '"></span>' + escapeHtml(text) + '</span>';
+  const title = p.imap.error || (p.imap.state === 'none' && clusterMode ? IMAP_NONE_CLUSTER : hint);
+  return '<span title="' + escapeHtml(title) + '"><span class="dot ' + cls + '"></span>' + escapeHtml(text) + '</span>';
 }
 
 function browserDetail(p) {
@@ -91,7 +95,11 @@ function browserDetail(p) {
 
 function imapDetail(p) {
   const i = p.imap;
-  if (i.state === 'none') return 'Пароля нет: gRPC читает коды этого родителя только через браузер (медленнее, только открытая папка).';
+  if (i.state === 'none') {
+    return clusterMode
+      ? 'Пароля нет: сервис кодов в кластере не читает ящик этого родителя, коды его алиасов не выдаются (запасного пути через браузер там нет). Задайте app-specific пароль.'
+      : 'Пароля нет: gRPC читает коды этого родителя только через браузер (медленнее, только открытая папка).';
+  }
   const via = i.proxy ? ' Через прокси ' + i.proxy + '.' : '';
   if (i.state === 'connected') return 'Пароль задан, gRPC-сервис читает ящик по IMAP.' + via;
   if (i.state === 'unknown') return 'Пароль задан. Состояние появится, когда gRPC-сервис запущен и вошёл в ящик.' + via;
@@ -330,11 +338,15 @@ async function parentAction(id, action, button) {
       return run('Проверяю вход в iCloud Mail…', () => callApi('PUT', url + '/imap', { password, proxy: input('imap-proxy').value.trim() }),
         () => {
           input('imap-password').value = '';
-          return 'Вход принят, пароль сохранён в mail-code.json. gRPC-сервис подхватит его без перезапуска.';
+          return clusterMode
+            ? 'Вход принят, пароль сохранён и сразу уходит сервису кодов в кластере.'
+            : 'Вход принят, пароль сохранён в mail-code.json. gRPC-сервис подхватит его без перезапуска.';
         });
     }
     case 'remove-imap':
-      if (!confirm('Удалить IMAP-пароль ' + p.email + ' из mail-code.json? Коды этого родителя gRPC будет читать только через браузер.')) return;
+      if (!confirm(clusterMode
+        ? 'Удалить IMAP-пароль ' + p.email + '?\n\nСервис кодов в кластере перестанет читать ящик этого родителя: коды его алиасов выдаваться не будут.'
+        : 'Удалить IMAP-пароль ' + p.email + ' из mail-code.json? Коды этого родителя gRPC будет читать только через браузер.')) return;
       return run('Удаляю пароль…', () => callApi('DELETE', url + '/imap'), () => 'Пароль удалён.');
     case 'save-prefix':
       return run('Сохраняю метку…', () => callApi('PATCH', url, { namePrefix: input('prefix').value.trim() }),
@@ -585,6 +597,7 @@ async function refresh() {
   $('#btn-stop').disabled = !st.running;
   const grpc = await window.api.invoke('grpc:state');
   const cluster = health && health.cluster;
+  clusterMode = !!cluster;
   if (cluster) {
     // Коды выдаёт сервис в кластере; локальный gRPC при этом лишний: к одному Apple ID ходили бы два клиента.
     const link = cluster.ok ? 'связь есть' : cluster.ok === null ? 'подключаюсь…' : 'нет связи';

@@ -146,7 +146,13 @@ export function loadConfig(file = process.env.CONFIG_FILE ?? 'config.json'): Con
   cfg.cluster.url = String(cfg.cluster.url ?? '').trim().replace(/\/+$/, '');
   cfg.cluster.token = String(cfg.cluster.token ?? '').trim();
   if (cfg.cluster.url) {
-    if (!/^https?:\/\/[^\s/]+/i.test(cfg.cluster.url)) throw new Error('cluster.url: адрес вида https://icloud-codes.example.com');
+    let url: URL;
+    try { url = new URL(cfg.cluster.url); } catch { throw new Error('cluster.url: адрес вида https://icloud-codes.example.com'); }
+    if (!['https:', 'http:'].includes(url.protocol)) throw new Error('cluster.url: адрес вида https://icloud-codes.example.com');
+    // В снимке пароли от Apple ID: по сети — только HTTPS, http — для проверки на этой же машине.
+    if (url.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
+      throw new Error('cluster.url: только https:// — в снимке IMAP-пароли родителей (http допустим лишь для 127.0.0.1)');
+    }
     if (cfg.cluster.token.length < 16) throw new Error('cluster.token: тот же секрет, что SNAPSHOT_TOKEN у сервиса в кластере (не короче 16 символов)');
     if (!(cfg.cluster.intervalMs >= 2000)) throw new Error('cluster.intervalMs: не меньше 2000');
   }
