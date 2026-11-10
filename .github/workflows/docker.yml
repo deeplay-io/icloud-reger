@@ -1,0 +1,58 @@
+# Образ сервиса кодов для Kubernetes: сборка и проверка запуска (без публикации — реестр выбирают девопсы).
+name: docker
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Сборка образа
+        run: docker build -t icloud-codes:ci .
+
+      - name: Запуск в режиме снимка
+        run: |
+          mkdir -p "$RUNNER_TEMP/config"
+          echo '{"browser":{"enabled":false},"snapshot":{"port":8080}}' > "$RUNNER_TEMP/config/mail-code.json"
+          docker run -d --name codes --read-only -p 8080:8080 -p 50051:50051 \
+            -e SNAPSHOT_TOKEN=ci-token-0123456789 -v "$RUNNER_TEMP/config:/config:ro" icloud-codes:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          docker logs codes
+
+      - name: Снимок принимается, токен обязателен
+        run: |
+          auth='authorization: Bearer ci-token-0123456789'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/status)" = 401
+          curl -fsS -H "$auth" http://127.0.0.1:8080/status | grep -q '"version":null'
+          curl -fsS -X PUT -H "$auth" -H 'content-type: application/json' \
+            -d '{"version":"ci","accounts":[],"aliases":{"a@icloud.com":"p@icloud.com"}}' http://127.0.0.1:8080/snapshot
+          curl -fsS -H "$auth" http://127.0.0.1:8080/status | grep -q '"version":"ci"'
+          docker logs codes 2>&1 | grep -q 'снимок от приложения получен'
+
+      - name: gRPC отвечает
+        run: |
+          docker exec codes node -e "
+            const grpc = require('@grpc/grpc-js');
+            const { mailCodeClient } = require('./dist/grpcServer');
+            const Client = mailCodeClient();
+            new Client('127.0.0.1:50051', grpc.credentials.createInsecure()).GetCode(
+              { email: 'a@icloud.com', kind: 'CODE_KIND_SIGN_UP', wait_seconds: 0 },
+              (error, response) => {
+                if (error) { console.error(error); process.exit(1); }
+                console.log(response);
+                // Ящиков в снимке нет: FAIL с подсказкой, а не падение.
+                process.exit(response.result === 'GET_CODE_RESULT_FAIL' && /нет ни одного IMAP-пароля/.test(response.error_message) ? 0 : 1);
+              });
+          "
+
+      - if: always()
+        run: docker logs codes || true

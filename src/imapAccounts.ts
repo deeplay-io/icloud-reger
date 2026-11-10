@@ -51,6 +51,31 @@ export function readImapAccounts(file: string): ImapAccountInfo[] {
   }));
 }
 
+/**
+ * Пароли родителей для снимка сервису кодов в кластере. Файл не найден или не читается — исключение, а не пустой список:
+ * снимок целиком заменяет прежний, и пустой список вывел бы сервис в кластере из всех ящиков.
+ */
+export function readImapCredentials(file: string): ImapAccount[] {
+  if (!existsSync(file)) throw new Error(`не найден ${file}`);
+  let raw: any;
+  try { raw = JSON.parse(readFileSync(file, 'utf8')); } catch (error) {
+    throw new Error(`${path.basename(file)} не читается: ${error instanceof Error ? error.message : error}`);
+  }
+  const accounts = raw?.imap?.accounts ?? [];
+  if (!Array.isArray(accounts)) throw new Error(`${path.basename(file)}: imap.accounts — не массив`);
+  // Повтор одного e-mail — как у gRPC-сервиса с файлом: действует последняя запись.
+  const byEmail = new Map<string, ImapAccount>();
+  for (const a of accounts) {
+    if (!a || typeof a.email !== 'string' || typeof a.password !== 'string' || !a.password.trim() || a.password === EXAMPLE_PASSWORD) continue;
+    const email = a.email.trim().toLowerCase();
+    const user = String(a.user ?? '').trim();
+    const proxy = String(a.proxy ?? '').trim();
+    byEmail.delete(email);
+    byEmail.set(email, { email, password: a.password.trim(), ...(user ? { user } : {}), ...(proxy ? { proxy } : {}) });
+  }
+  return [...byEmail.values()];
+}
+
 /** Ящик родителя: запись, где его e-mail указан как email или как логин (user). */
 export function accountOf(accounts: ImapAccountInfo[], parentEmail: string): ImapAccountInfo | undefined {
   const email = parentEmail.toLowerCase();

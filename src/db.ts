@@ -282,6 +282,12 @@ export class Db {
     })();
   }
 
+  /** Родитель каждого алиаса, по алфавиту алиасов: для снимка сервису кодов в кластере. */
+  aliasParents(): { email: string; parent: string }[] {
+    return this.d.prepare('SELECT a.email, p.email AS parent FROM aliases a JOIN parents p ON p.id = a.parent_id ORDER BY a.email')
+      .all() as { email: string; parent: string }[];
+  }
+
   findAlias(email: string): AliasRow | undefined {
     return (this.d.prepare(`SELECT * FROM aliases WHERE email = ?`).get(email.toLowerCase()) as AliasRow) ?? undefined;
   }

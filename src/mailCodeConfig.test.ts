@@ -23,6 +23,28 @@ test('the example starts without mailboxes; a placeholder password is still refu
   assert.equal(loadMailCodeConfig(file).imap.accounts[0].email, 'parent1@icloud.com');
 });
 
+test('snapshot mode is off by default and needs a token, preferably from SNAPSHOT_TOKEN', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'mail-code-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'mail-code.json');
+  const saved = process.env.SNAPSHOT_TOKEN;
+  t.after(() => { if (saved === undefined) delete process.env.SNAPSHOT_TOKEN; else process.env.SNAPSHOT_TOKEN = saved; });
+  delete process.env.SNAPSHOT_TOKEN;
+
+  writeFileSync(file, JSON.stringify({}));
+  assert.equal(loadMailCodeConfig(file).snapshot.port, 0);
+  writeFileSync(file, JSON.stringify({ snapshot: { port: 8080 } }));
+  assert.throws(() => loadMailCodeConfig(file), /snapshot\.token/);
+  writeFileSync(file, JSON.stringify({ snapshot: { port: 8080, token: 'short' } }));
+  assert.throws(() => loadMailCodeConfig(file), /не короче 16/);
+  process.env.SNAPSHOT_TOKEN = 'from-secret-0123456789';
+  const cfg = loadMailCodeConfig(file);
+  assert.equal(cfg.snapshot.token, 'from-secret-0123456789');
+  assert.equal(cfg.snapshot.host, '0.0.0.0');
+  writeFileSync(file, JSON.stringify({ snapshot: { port: 70000 } }));
+  assert.throws(() => loadMailCodeConfig(file), /snapshot\.port/);
+});
+
 test('alias registry database: next to mail-code.json by default, CODES_DB from the window, explicit path wins', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'mail-code-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

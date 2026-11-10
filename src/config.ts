@@ -52,6 +52,16 @@ export interface ParentConfig {
   aliasLimit: number;
 }
 
+/** Сервис кодов в кластере: приложение отправляет ему снимок с IMAP-паролями и алиасами родителей. */
+export interface ClusterConfig {
+  /** Адрес приёма снимка (ingress), например https://icloud-codes.example.com; пусто — кластер не используется. */
+  url: string;
+  /** Тот же секрет, что SNAPSHOT_TOKEN у сервиса в кластере. */
+  token: string;
+  /** Как часто сверять снимок и обновлять состояние ящиков. */
+  intervalMs: number;
+}
+
 export interface Config {
   api: ApiConfig;
   db: DbConfig;
@@ -60,6 +70,7 @@ export interface Config {
   parent: ParentConfig;
   generator: GeneratorConfig;
   code: CodeConfig;
+  cluster: ClusterConfig;
 }
 
 export const DEFAULTS: Config = {
@@ -97,6 +108,7 @@ export const DEFAULTS: Config = {
       { name: 'any-digit4', mustContain: 'код|code|верификац|one-time|otp', regex: '\\b(\\d{4})\\b' },
     ],
   },
+  cluster: { url: '', token: '', intervalMs: 10000 },
 };
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -130,6 +142,13 @@ export function loadConfig(file = process.env.CONFIG_FILE ?? 'config.json'): Con
   if (!Number.isFinite(cfg.generator.minIntervalMinutes) || !Number.isFinite(cfg.generator.maxIntervalMinutes)
     || cfg.generator.minIntervalMinutes < 1 || cfg.generator.maxIntervalMinutes < cfg.generator.minIntervalMinutes) {
     throw new Error('generator: укажите интервалы minIntervalMinutes >= 1 и maxIntervalMinutes >= minIntervalMinutes');
+  }
+  cfg.cluster.url = String(cfg.cluster.url ?? '').trim().replace(/\/+$/, '');
+  cfg.cluster.token = String(cfg.cluster.token ?? '').trim();
+  if (cfg.cluster.url) {
+    if (!/^https?:\/\/[^\s/]+/i.test(cfg.cluster.url)) throw new Error('cluster.url: адрес вида https://icloud-codes.example.com');
+    if (cfg.cluster.token.length < 16) throw new Error('cluster.token: тот же секрет, что SNAPSHOT_TOKEN у сервиса в кластере (не короче 16 символов)');
+    if (!(cfg.cluster.intervalMs >= 2000)) throw new Error('cluster.intervalMs: не меньше 2000');
   }
   if (!cfg.code.selectors.messageItem) {
     console.warn('[config] code.selectors.messageItem пуст — чтение кодов будет падать до тех пор, пока не выставите селектор (см. debug/ дампы)');

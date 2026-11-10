@@ -60,5 +60,10 @@
   },
   "update": {
     "token": ""
+  },
+  "cluster": {
+    "url": "",
+    "token": "",
+    "intervalMs": 10000
   }
 }
