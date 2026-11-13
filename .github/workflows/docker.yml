@@ -1,4 +1,6 @@
-# Образ сервиса кодов для Kubernetes: сборка и проверка запуска (без публикации — реестр выбирают девопсы).
+# Образ сервиса кодов для Kubernetes: сборка и проверка запуска.
+# На PR и main — только проверка. Из deploy.yml (workflow_call, publish: true) проверенный образ
+# публикуется в реестр — тот же, что прошёл проверки, без пересборки.
 name: docker
 
 on:
@@ -6,13 +8,33 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      publish:
+        description: Опубликовать проверенный образ в реестр
+        type: boolean
+        default: false
+    secrets:
+      REGISTRY_USERNAME:
+        required: false
+      REGISTRY_PASSWORD:
+        required: false
+    outputs:
+      image:
+        description: Опубликованный образ с digest (repo:tag@sha256:…)
+        value: ${{ jobs.image.outputs.image }}
 
 permissions:
   contents: read
 
+env:
+  IMAGE_REPO: registry.deeplay.io/deeprun-reverse/icloud-codes
+
 jobs:
   image:
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.push.outputs.image }}
     steps:
       - uses: actions/checkout@v5
 
@@ -56,3 +78,25 @@ jobs:
 
       - if: always()
         run: docker logs codes || true
+
+      # Публикация — только с тега релиза: тег образа равен git-тегу, неподвижен и однозначно указывает на коммит.
+      - name: Публикация в реестр
+        id: push
+        if: inputs.publish
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" == v* ]] \
+            || { echo "::error::Публикуется только тег v*, а запуск с $GITHUB_REF_TYPE $GITHUB_REF_NAME"; exit 1; }
+          want="v$(node -p "require('./package.json').version")"
+          [ "$want" = "$GITHUB_REF_NAME" ] \
+            || { echo "::error::Тег $GITHUB_REF_NAME, а версия в package.json — $want"; exit 1; }
+          echo "$REGISTRY_PASSWORD" | docker login "${IMAGE_REPO%%/*}" -u "$REGISTRY_USERNAME" --password-stdin
+          image="$IMAGE_REPO:$GITHUB_REF_NAME"
+          docker tag icloud-codes:ci "$image"
+          docker push "$image"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
+          digest="${digest#*@}"
+          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          echo "Опубликован \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
