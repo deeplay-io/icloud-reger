@@ -1,0 +1,80 @@
+# Выкладка сервиса кодов в Kubernetes по тегу релиза (тот же тег v*, что собирает установщик в release.yml).
+# Вручную: Actions → deploy → Run workflow, в «Use workflow from» выбрать тег.
+#
+# Куда: кластер ovh-de1-alpha, namespace deeprun-dev-general-bot, deployment/icloud-codes.
+# Конфиг, Secret, Service и HTTPProxy CD не трогает — меняется только образ (по digest).
+# Реплика одна, стратегия Recreate: во время выкладки сервис недоступен несколько секунд.
+#
+# Секреты:
+#   репозитория — REGISTRY_USERNAME, REGISTRY_PASSWORD: robot Harbor проекта deeprun-reverse с правом push
+#     (секреты environment вызываемому docker.yml не видны, поэтому на уровне репозитория);
+#   environment «production» — KUBECONFIG: ServiceAccount icloud-codes-deployer, может только сменить образ
+#     у deployment/icloud-codes и дождаться rollout.
+name: deploy
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Две выкладки одновременно не идут; начатая не прерывается.
+concurrency:
+  group: deploy-icloud-codes
+  cancel-in-progress: false
+
+jobs:
+  image:
+    uses: ./.github/workflows/docker.yml
+    with:
+      publish: true
+    secrets:
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://icloud-codes.deeprun.ovh-de1-alpha.ecoinfra.io/status
+    env:
+      IMAGE: ${{ needs.image.outputs.image }}
+      URL: https://icloud-codes.deeprun.ovh-de1-alpha.ecoinfra.io
+    steps:
+      - name: Доступ к кластеру
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
+        run: |
+          [ -n "$IMAGE" ] || { echo "::error::Образ не опубликован"; exit 1; }
+          umask 077
+          printf '%s' "$KUBECONFIG_DATA" > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Смена образа
+        run: |
+          echo "Было: $(kubectl get deploy/icloud-codes -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          kubectl set image deploy/icloud-codes icloud-codes="$IMAGE"
+          echo "Стало: $IMAGE"
+
+      - name: Ожидание готовности
+        run: kubectl rollout status deploy/icloud-codes --timeout=5m
+
+      - name: Проверка снаружи — /status без токена отвечает 401
+        run: |
+          for i in $(seq 1 12); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/status")"
+            [ "$code" = 401 ] && { echo "ok: $URL/status → 401"; exit 0; }
+            echo "попытка $i: $code"; sleep 5
+          done
+          echo "::error::$URL/status отвечает $code вместо 401"; exit 1
+
+      - name: Диагностика
+        if: failure()
+        run: |
+          kubectl get pods -l app=icloud-codes -o wide || true
+          kubectl describe pods -l app=icloud-codes | tail -40 || true
+          kubectl logs deploy/icloud-codes --tail=100 || true
+          echo "::warning::Откат: Actions → deploy → Run workflow с предыдущего тега"
