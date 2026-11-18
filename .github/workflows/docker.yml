@@ -28,7 +28,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_REPO: registry.deeplay.io/deeprun-reverse/icloud-codes
+  IMAGE_REPO: registry.deeplay.io/deeprun-build/icloud-codes
 
 jobs:
   image:

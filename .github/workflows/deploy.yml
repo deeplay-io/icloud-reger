@@ -6,7 +6,7 @@
 # Реплика одна, стратегия Recreate: во время выкладки сервис недоступен несколько секунд.
 #
 # Секреты:
-#   репозитория — REGISTRY_USERNAME, REGISTRY_PASSWORD: robot Harbor проекта deeprun-reverse с правом push
+#   репозитория — REGISTRY_USERNAME, REGISTRY_PASSWORD: robot Harbor robot$deeprun-build+icloud-reger-ci (push/pull)
 #     (секреты environment вызываемому docker.yml не видны, поэтому на уровне репозитория);
 #   environment «production» — KUBECONFIG: ServiceAccount icloud-codes-deployer, может только сменить образ
 #     у deployment/icloud-codes и дождаться rollout.
