@@ -1,0 +1,63 @@
+# Учётка CD (.github/workflows/deploy.yml) для выкладки icloud-codes.
+# Может сменить образ у deployment/icloud-codes, дождаться rollout и обратиться к сервису через services/proxy.
+# Секреты не читает, ничего не удаляет, к другим Deployment и сервисам доступа нет.
+#
+# kubeconfig для секрета KUBECONFIG environment «production» собирается из Secret icloud-codes-deployer-token
+# (поля token и ca.crt), server — https://api.ovh-de1-alpha.cloud.ecoinfra.io:6443.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: icloud-codes-deployer
+  namespace: deeprun-dev-general-bot
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: icloud-codes-deployer-token
+  namespace: deeprun-dev-general-bot
+  annotations:
+    kubernetes.io/service-account.name: icloud-codes-deployer
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: icloud-codes-deployer
+  namespace: deeprun-dev-general-bot
+rules:
+  # Смена образа — только у своего Deployment.
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [icloud-codes]
+    verbs: [get, patch]
+  # kubectl rollout status смотрит Deployment и его ReplicaSet через list/watch.
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [list, watch]
+  # Диагностика при неудачной выкладке.
+  - apiGroups: [""]
+    resources: [pods, events]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # Проверка сервиса после выкладки: снаружи /status открыт только адресу Windows-сервера.
+  - apiGroups: [""]
+    resources: [services/proxy]
+    resourceNames: [icloud-codes, "icloud-codes:snapshot"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: icloud-codes-deployer
+  namespace: deeprun-dev-general-bot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: icloud-codes-deployer
+subjects:
+  - kind: ServiceAccount
+    name: icloud-codes-deployer
+    namespace: deeprun-dev-general-bot

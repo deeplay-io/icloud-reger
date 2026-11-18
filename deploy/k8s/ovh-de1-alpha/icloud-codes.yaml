@@ -1,0 +1,154 @@
+# icloud-codes в кластере ovh-de1-alpha, namespace deeprun-dev-general-bot — то, что там стоит.
+# Основа — ../icloud-codes.yaml; Ingress (nginx) заменён на Certificate (cert-manager) + HTTPProxy (Contour).
+#
+# Образ меняет CD (.github/workflows/deploy.yml) по тегу v*. Применять этот файл после выкладки из CD
+# можно только со свежим образом в Deployment — иначе он откатит образ:
+#   kubectl -n deeprun-dev-general-bot get deploy icloud-codes -o jsonpath='{.spec.template.spec.containers[0].image}'
+#
+# Secret icloud-codes (SNAPSHOT_TOKEN — тот же, что cluster.token в config.json приложения) в файле нет,
+# он создаётся отдельно:
+#   kubectl -n deeprun-dev-general-bot create secret generic icloud-codes --from-literal=SNAPSHOT_TOKEN=…
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: icloud-codes
+  namespace: deeprun-dev-general-bot
+data:
+  mail-code.json: |
+    {
+      "grpc": { "host": "0.0.0.0", "port": 50051, "maxWaitSeconds": 120, "pollIntervalMs": 3000 },
+      "browser": { "enabled": false },
+      "snapshot": { "host": "0.0.0.0", "port": 8080 },
+      "domains": ["icloud.com"]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: icloud-codes
+  namespace: deeprun-dev-general-bot
+spec:
+  # Ровно один экземпляр: каждый держит свои IMAP-сессии к Apple ID. Не масштабировать.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: icloud-codes
+  template:
+    metadata:
+      labels:
+        app: icloud-codes
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: icloud-codes
+          image: registry.deeplay.io/deeprun-reverse/icloud-codes:v0.4.1@sha256:d962210025c2b9d0a4d50dde94647bdd3426cee34c45a7ccb06efcc3ffc89acb
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: snapshot
+              containerPort: 8080
+          env:
+            - name: MAIL_CODE_CONFIG
+              value: /config/mail-code.json
+            - name: SNAPSHOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: icloud-codes
+                  key: SNAPSHOT_TOKEN
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            grpc:
+              port: 50051
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: config
+          configMap:
+            name: icloud-codes
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: icloud-codes
+  namespace: deeprun-dev-general-bot
+spec:
+  selector:
+    app: icloud-codes
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      appProtocol: grpc
+    - name: snapshot
+      port: 8080
+      targetPort: snapshot
+---
+# Публичный CA (Let's Encrypt, DNS-01) — доверен Windows без установки корня.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: icloud-codes-tls
+  namespace: deeprun-dev-general-bot
+spec:
+  secretName: icloud-codes-tls
+  commonName: icloud-codes.deeprun.ovh-de1-alpha.ecoinfra.io
+  dnsNames:
+    - icloud-codes.deeprun.ovh-de1-alpha.ecoinfra.io
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: icloud-codes
+  namespace: deeprun-dev-general-bot
+spec:
+  ingressClassName: contour-default
+  virtualhost:
+    fqdn: icloud-codes.deeprun.ovh-de1-alpha.ecoinfra.io
+    tls:
+      secretName: icloud-codes-tls
+  # Наружу только приём снимка и состояние; 50051 не публикуется.
+  # Доступ — только с внешнего адреса Windows-сервера (172.16.253.12 выходит через 45.91.163.6).
+  # source: Remote — адрес клиента; Peer здесь видит балансировщик, а не клиента (проверено 2026-11-13).
+  routes:
+    - conditions:
+        - prefix: /snapshot
+      ipAllowPolicy:
+        - source: Remote
+          cidr: 45.91.163.6/32
+      services:
+        - name: icloud-codes
+          port: 8080
+    - conditions:
+        - prefix: /status
+      ipAllowPolicy:
+        - source: Remote
+          cidr: 45.91.163.6/32
+      services:
+        - name: icloud-codes
+          port: 8080

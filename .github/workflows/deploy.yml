@@ -9,7 +9,7 @@
 #   репозитория — REGISTRY_USERNAME, REGISTRY_PASSWORD: robot Harbor robot$deeprun-build+icloud-reger-ci (push/pull)
 #     (секреты environment вызываемому docker.yml не видны, поэтому на уровне репозитория);
 #   environment «production» — KUBECONFIG: ServiceAccount icloud-codes-deployer, может только сменить образ
-#     у deployment/icloud-codes и дождаться rollout.
+#     у deployment/icloud-codes, дождаться rollout и обратиться к сервису через services/proxy.
 name: deploy
 
 on:
@@ -62,14 +62,26 @@ jobs:
       - name: Ожидание готовности
         run: kubectl rollout status deploy/icloud-codes --timeout=5m
 
-      - name: Проверка снаружи — /status без токена отвечает 401
+      # Сам сервис — через прокси API-сервера (учётке CD разрешён services/proxy только на icloud-codes):
+      # снаружи /status открыт лишь адресу Windows-сервера, раннер туда не пропустят.
+      - name: Проверка сервиса — /status без токена отвечает 401
         run: |
+          kubectl proxy --port=8001 >/dev/null 2>&1 &
+          trap 'kill %1' EXIT
+          base=http://127.0.0.1:8001/api/v1/namespaces/deeprun-dev-general-bot/services/icloud-codes:snapshot/proxy
           for i in $(seq 1 12); do
-            code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/status")"
-            [ "$code" = 401 ] && { echo "ok: $URL/status → 401"; exit 0; }
+            code="$(curl -s -o /dev/null -w '%{http_code}' "$base/status")"
+            [ "$code" = 401 ] && { echo "ok: сервис /status → 401"; exit 0; }
             echo "попытка $i: $code"; sleep 5
           done
-          echo "::error::$URL/status отвечает $code вместо 401"; exit 1
+          echo "::error::сервис /status отвечает $code вместо 401"; exit 1
+
+      # Снаружи раннер не в списке разрешённых адресов: 403 от Contour значит, что маршрут жив и фильтр по IP на месте.
+      - name: Проверка снаружи — чужому адресу 403
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/status")"
+          [ "$code" = 403 ] || { echo "::error::$URL/status с адреса раннера отвечает $code вместо 403"; exit 1; }
+          echo "ok: $URL/status → 403"
 
       - name: Диагностика
         if: failure()
