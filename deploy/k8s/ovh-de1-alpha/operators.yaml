@@ -1,0 +1,68 @@
+# Доступ группы DEP-IT-DR-ECO к icloud-codes в deeprun-dev-general-bot.
+# Namespace общий с devbot: роль даёт менять только объекты icloud-codes, к секретам devbot доступа нет.
+#
+# Можно: смотреть поды, логи и события; перезапустить сервис (kubectl rollout restart deploy/icloud-codes);
+# править ConfigMap, Secret (SNAPSHOT_TOKEN) и HTTPProxy (список адресов) icloud-codes.
+# Нельзя: читать чужие Secret и ConfigMap, удалять объекты, port-forward и exec.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: icloud-codes-operator
+  namespace: deeprun-dev-general-bot
+rules:
+  # Диагностика. Имена подов генерируются, поэтому ограничить их по имени нельзя — только чтение.
+  - apiGroups: [""]
+    resources: [pods, events]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # kubectl rollout status / logs deploy/… смотрят Deployment и ReplicaSet через list/watch.
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [list, watch]
+  # Объекты icloud-codes. Реплик должно оставаться ровно 1 — каждый под держит свои IMAP-сессии.
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [icloud-codes]
+    verbs: [get, patch, update]
+  - apiGroups: [""]
+    resources: [configmaps, secrets]
+    resourceNames: [icloud-codes]
+    verbs: [get, patch, update]
+  - apiGroups: [""]
+    resources: [services]
+    resourceNames: [icloud-codes]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [services/proxy]
+    resourceNames: [icloud-codes, "icloud-codes:snapshot"]
+    verbs: [get]
+  - apiGroups: [projectcontour.io]
+    resources: [httpproxies]
+    resourceNames: [icloud-codes]
+    verbs: [get, patch, update]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    resourceNames: [icloud-codes-tls]
+    verbs: [get]
+---
+# Kubernetes сравнивает имя группы с учётом регистра, а как Bouncer отдаёт эту группу — пока не проверено:
+# записаны оба написания. Лишнее убрать, когда станет видно, какое срабатывает.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: icloud-codes-operator
+  namespace: deeprun-dev-general-bot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: icloud-codes-operator
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: DEP-IT-DR-ECO
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: dep-it-dr-eco
