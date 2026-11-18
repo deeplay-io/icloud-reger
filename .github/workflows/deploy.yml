@@ -66,11 +66,15 @@ jobs:
       # снаружи /status открыт лишь адресу Windows-сервера, раннер туда не пропустят.
       - name: Проверка сервиса — /status без токена отвечает 401
         run: |
-          kubectl proxy --port=8001 >/dev/null 2>&1 &
+          kubectl proxy --port=8001 >"$RUNNER_TEMP/proxy.log" 2>&1 &
           trap 'kill %1' EXIT
+          # Прокси поднимается не сразу; без ожидания первый curl получает «connection refused».
+          for i in $(seq 1 20); do
+            grep -q 'Starting to serve' "$RUNNER_TEMP/proxy.log" && break; sleep 0.5
+          done
           base=http://127.0.0.1:8001/api/v1/namespaces/deeprun-dev-general-bot/services/icloud-codes:snapshot/proxy
           for i in $(seq 1 12); do
-            code="$(curl -s -o /dev/null -w '%{http_code}' "$base/status")"
+            code="$(curl -s -o /dev/null -w '%{http_code}' "$base/status" || true)"
             [ "$code" = 401 ] && { echo "ok: сервис /status → 401"; exit 0; }
             echo "попытка $i: $code"; sleep 5
           done
