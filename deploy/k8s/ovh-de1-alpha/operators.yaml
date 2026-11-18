@@ -1,4 +1,5 @@
-# Доступ группы DEP-IT-DR-ECO к icloud-codes в deeprun-dev-general-bot.
+# Доступ к icloud-codes в deeprun-dev-general-bot: группы DEP-IT-DR-ECO и deeprun-develop-builder-studio,
+# пользователь nauk0a@deeplay.io.
 # Namespace общий с devbot: роль даёт менять только объекты icloud-codes, к секретам devbot доступа нет.
 #
 # Можно: смотреть поды, логи и события; перезапустить сервис (kubectl rollout restart deploy/icloud-codes);
@@ -48,8 +49,9 @@ rules:
     resourceNames: [icloud-codes-tls]
     verbs: [get]
 ---
-# Kubernetes сравнивает имя группы с учётом регистра, а как Bouncer отдаёт эту группу — пока не проверено:
+# Kubernetes сравнивает имя группы с учётом регистра, а как Bouncer отдаёт DEP-IT-DR-ECO — пока не проверено:
 # записаны оба написания. Лишнее убрать, когда станет видно, какое срабатывает.
+# Пользователь в токене Bouncer — почта (как minky@deeplay.io).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -66,3 +68,9 @@ subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: Group
     name: dep-it-dr-eco
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: deeprun-develop-builder-studio
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: nauk0a@deeplay.io
